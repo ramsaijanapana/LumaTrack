@@ -1,10 +1,22 @@
+let csrfToken = "";
+
+function rememberCsrf(payload) {
+  if (payload && typeof payload === "object" && typeof payload.csrfToken === "string") {
+    csrfToken = payload.csrfToken;
+  }
+  return payload;
+}
+
 async function requestJson(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const headers = {
+    "Content-Type": "application/json",
+    ...(csrfToken && !["GET", "HEAD", "OPTIONS"].includes(method) ? { "X-CSRF-Token": csrfToken } : {}),
+    ...(options.headers || {})
+  };
   const response = await fetch(url, {
     credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
+    headers,
     ...options
   });
 
@@ -25,28 +37,31 @@ async function requestJson(url, options = {}) {
 }
 
 export function fetchBootstrap() {
-  return requestJson("./api/bootstrap");
+  return requestJson("./api/bootstrap").then((payload) => {
+    csrfToken = payload?.app?.csrfToken || "";
+    return payload;
+  });
 }
 
 export function registerAccount(input) {
   return requestJson("./api/auth/register", {
     method: "POST",
     body: JSON.stringify(input)
-  });
+  }).then(rememberCsrf);
 }
 
 export function loginAccount(input) {
   return requestJson("./api/auth/login", {
     method: "POST",
     body: JSON.stringify(input)
-  });
+  }).then(rememberCsrf);
 }
 
 export function logoutAccount() {
   return requestJson("./api/auth/logout", {
     method: "POST",
     body: JSON.stringify({})
-  });
+  }).then(rememberCsrf);
 }
 
 export function fetchState() {

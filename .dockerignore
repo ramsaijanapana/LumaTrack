@@ -1,8 +1,12 @@
-.venv/
-__pycache__/
+.git
+.gitignore
+.venv
+__pycache__
 *.pyc
 .env
 .lumatrack.secret
 lumatrack.db
 server.err.log
 server.out.log
+playwright-report
+test-results

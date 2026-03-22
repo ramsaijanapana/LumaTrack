@@ -4,22 +4,109 @@ import os
 import re
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 from authlib.integrations.flask_client import OAuth
-from flask import Flask, abort, g, jsonify, redirect, request, send_from_directory, session, url_for
+from authlib.jose import jwt
+from flask import Flask, abort, g, has_request_context, jsonify, redirect, request, send_from_directory, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 ROOT_DIR = Path(__file__).resolve().parent
+ENV_PATH = ROOT_DIR / ".env"
 DB_PATH = ROOT_DIR / "lumatrack.db"
 SECRET_PATH = ROOT_DIR / ".lumatrack.secret"
 SCHEMA_VERSION = 2
 HTTP_HEADERS = {"User-Agent": "LumaTrack/0.1 (local watch tracker)"}
+APPLE_AUDIENCE = "https://appleid.apple.com"
+APPLE_CLIENT_SECRET_CACHE = {}
+PUBLIC_BASE_URL_ENV = "LUMATRACK_PUBLIC_BASE_URL"
+DATABASE_URL_ENV = "DATABASE_URL"
+POSTGRES_SCHEMES = ("postgres://", "postgresql://")
+RATE_LIMIT_STATE = {}
+SQLITE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT,
+    avatar_url TEXT,
+    created_at TEXT NOT NULL,
+    last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_identities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    provider_subject TEXT NOT NULL,
+    email TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(provider, provider_subject),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_states (
+    user_id INTEGER PRIMARY KEY,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_preview TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+POSTGRES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id BIGSERIAL PRIMARY KEY,
+    email TEXT UNIQUE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT,
+    avatar_url TEXT,
+    created_at TEXT NOT NULL,
+    last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_identities (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_subject TEXT NOT NULL,
+    email TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(provider, provider_subject)
+);
+
+CREATE TABLE IF NOT EXISTS user_states (
+    user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_preview TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT
+);
+"""
 
 PROVIDER_CONFIG = {
     "google": {
@@ -119,8 +206,364 @@ ALLOWED_STATIC_FILES = {
 }
 
 
+def parse_env_value(raw_value):
+    value = raw_value.strip()
+    if not value:
+        return ""
+
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1]
+
+    return value.replace("\\n", "\n")
+
+
+def load_env_file(path=ENV_PATH):
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+
+        os.environ[key] = parse_env_value(raw_value)
+
+
+def env_value(name):
+    return (os.environ.get(name) or "").strip()
+
+
+def resolve_local_path(path_value):
+    path = Path(path_value)
+    return path if path.is_absolute() else ROOT_DIR / path
+
+
+def parse_positive_int(value, default):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def env_flag(name, default=False):
+    value = env_value(name)
+    if not value:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def first_env_value(*names):
+    for name in names:
+        value = env_value(name)
+        if value:
+            return value
+    return ""
+
+
+def is_postgres_database():
+    value = env_value(DATABASE_URL_ENV).lower()
+    return value.startswith(POSTGRES_SCHEMES)
+
+
+def read_apple_private_key():
+    inline_key = env_value("APPLE_PRIVATE_KEY")
+    if inline_key:
+        return inline_key
+
+    key_path = env_value("APPLE_PRIVATE_KEY_PATH")
+    if not key_path:
+        return ""
+
+    resolved = resolve_local_path(key_path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"Apple private key file not found: {resolved}")
+
+    return resolved.read_text(encoding="utf-8").strip()
+
+
+def build_apple_client_secret(client_id):
+    explicit_secret = env_value("APPLE_CLIENT_SECRET")
+    if explicit_secret:
+        return explicit_secret
+
+    team_id = env_value("APPLE_TEAM_ID")
+    key_id = env_value("APPLE_KEY_ID")
+    private_key = read_apple_private_key()
+    if not client_id or not team_id or not key_id or not private_key:
+        return ""
+
+    ttl_days = min(parse_positive_int(env_value("APPLE_CLIENT_SECRET_TTL_DAYS"), 180), 180)
+    issued_at = datetime.now(timezone.utc)
+    expires_at = issued_at + timedelta(days=ttl_days)
+    cache_key = (
+        client_id,
+        team_id,
+        key_id,
+        hashlib.sha256(private_key.encode("utf-8")).hexdigest(),
+        ttl_days,
+    )
+    cached = APPLE_CLIENT_SECRET_CACHE.get(cache_key)
+    if cached and cached["expires_at"] > issued_at.timestamp() + 300:
+        return cached["token"]
+
+    header = {"alg": "ES256", "kid": key_id}
+    payload = {
+        "iss": team_id,
+        "iat": int(issued_at.timestamp()),
+        "exp": int(expires_at.timestamp()),
+        "aud": APPLE_AUDIENCE,
+        "sub": client_id,
+    }
+    token = jwt.encode(header, payload, private_key)
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+
+    APPLE_CLIENT_SECRET_CACHE.clear()
+    APPLE_CLIENT_SECRET_CACHE[cache_key] = {
+        "token": token,
+        "expires_at": expires_at.timestamp(),
+    }
+    return token
+
+
+def resolve_provider_credentials(provider, definition):
+    client_id = env_value(definition["client_id_env"])
+    client_secret = env_value(definition["client_secret_env"])
+    error = None
+
+    if provider == "apple" and client_id and not client_secret:
+        try:
+            client_secret = build_apple_client_secret(client_id)
+        except Exception as exc:
+            error = str(exc)
+            client_secret = ""
+
+    return {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "configured": bool(client_id and client_secret),
+        "error": error,
+    }
+
+
+load_env_file()
+
+
+def current_base_url():
+    configured = first_env_value(PUBLIC_BASE_URL_ENV, "RENDER_EXTERNAL_URL").rstrip("/")
+    if configured:
+        return configured
+    if not has_request_context():
+        host = env_value("LUMATRACK_HOST") or "127.0.0.1"
+        port = env_value("LUMATRACK_PORT") or "5000"
+        scheme = "https" if env_flag("LUMATRACK_SESSION_COOKIE_SECURE") else "http"
+        return f"{scheme}://{host}:{port}"
+    return request.host_url.rstrip("/")
+
+
+def public_url(path):
+    normalized = path if path.startswith("/") else f"/{path}"
+    return f"{current_base_url()}{normalized}"
+
+
+def is_https_base_url():
+    return current_base_url().lower().startswith("https://")
+
+
+def allowed_hosts():
+    configured = env_value("LUMATRACK_ALLOWED_HOSTS")
+    if configured:
+        return {item.strip().lower() for item in configured.split(",") if item.strip()}
+
+    render_host = env_value("RENDER_EXTERNAL_HOSTNAME")
+    if render_host:
+        return {render_host.lower()}
+
+    base_url = first_env_value(PUBLIC_BASE_URL_ENV, "RENDER_EXTERNAL_URL")
+    if not base_url:
+        return set()
+
+    parsed = urlparse(base_url)
+    return {parsed.netloc.lower()} if parsed.netloc else set()
+
+
+def security_csp():
+    return "; ".join(
+        [
+            "default-src 'self'",
+            "base-uri 'self'",
+            "object-src 'none'",
+            "frame-ancestors 'none'",
+            "script-src 'self'",
+            "style-src 'self'",
+            "img-src 'self' https: data:",
+            "font-src 'self' data:",
+            "connect-src 'self'",
+            "manifest-src 'self'",
+            "worker-src 'self'",
+            "form-action 'self'",
+        ]
+    )
+
+
+def client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def enforce_rate_limit(bucket, limit, window_seconds):
+    now = time.time()
+    key = (bucket, client_ip())
+    timestamps = RATE_LIMIT_STATE.setdefault(key, [])
+    cutoff = now - window_seconds
+    while timestamps and timestamps[0] < cutoff:
+        timestamps.pop(0)
+    if len(timestamps) >= limit:
+        retry_after = max(1, int(window_seconds - (now - timestamps[0])))
+        response = jsonify({"error": "Too many requests. Please try again shortly."})
+        response.status_code = 429
+        response.headers["Retry-After"] = str(retry_after)
+        return response
+    timestamps.append(now)
+    return None
+
+
+def ensure_csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def validate_csrf():
+    expected = session.get("csrf_token")
+    provided = request.headers.get("X-CSRF-Token", "")
+    return bool(expected and provided and secrets.compare_digest(expected, provided))
+
+
+class DatabaseCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+    @property
+    def lastrowid(self):
+        return getattr(self.cursor, "lastrowid", None)
+
+
+class DatabaseConnection:
+    def __init__(self, connection, backend):
+        self.connection = connection
+        self.backend = backend
+
+    def execute(self, query, params=()):
+        statement = query.replace("?", "%s") if self.backend == "postgres" else query
+        if self.backend == "postgres":
+            cursor = self.connection.cursor()
+            cursor.execute(statement, params)
+            return DatabaseCursor(cursor)
+        return DatabaseCursor(self.connection.execute(statement, params))
+
+    def executescript(self, script):
+        if self.backend == "postgres":
+            cursor = self.connection.cursor()
+            for statement in [item.strip() for item in script.split(";") if item.strip()]:
+                cursor.execute(statement)
+            cursor.close()
+            return
+        self.connection.executescript(script)
+
+    def commit(self):
+        self.connection.commit()
+
+    def close(self):
+        self.connection.close()
+
+
+def open_database_connection():
+    if is_postgres_database():
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as error:
+            raise RuntimeError("DATABASE_URL is set to PostgreSQL, but psycopg is not installed.") from error
+
+        connection = psycopg.connect(env_value(DATABASE_URL_ENV), row_factory=dict_row)
+        return DatabaseConnection(connection, "postgres")
+
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return DatabaseConnection(connection, "sqlite")
+
+
+def execute_insert_returning_id(query, params=()):
+    db = get_db()
+    if db.backend == "postgres":
+        statement = query.strip().rstrip(";") + " RETURNING id"
+        row = db.execute(statement, params).fetchone()
+        db.commit()
+        return row["id"]
+
+    cursor = db.execute(query, params)
+    db.commit()
+    return cursor.lastrowid
+
+
+def provider_requirements(provider, definition):
+    if provider == "apple":
+        return {
+            "requiredEnv": [definition["client_id_env"]],
+            "alternatives": [
+                [definition["client_secret_env"]],
+                ["APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_PRIVATE_KEY_PATH"],
+                ["APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_PRIVATE_KEY"],
+            ],
+        }
+    return {
+        "requiredEnv": [definition["client_id_env"], definition["client_secret_env"]],
+        "alternatives": [],
+    }
+
+
+def provider_missing_env(provider, definition):
+    requirements = provider_requirements(provider, definition)
+    required_missing = [name for name in requirements["requiredEnv"] if not env_value(name)]
+    if provider != "apple":
+        return required_missing
+
+    if not env_value(definition["client_id_env"]):
+        return required_missing
+    if env_value(definition["client_secret_env"]):
+        return []
+
+    alternative_groups = requirements["alternatives"][1:]
+    if any(all(env_value(name) for name in group) for group in alternative_groups):
+        return []
+
+    return ["APPLE_CLIENT_SECRET or APPLE_TEAM_ID + APPLE_KEY_ID + APPLE_PRIVATE_KEY_PATH"]
+
+
 def load_or_create_secret():
-    env_secret = os.environ.get("LUMATRACK_SECRET_KEY")
+    env_secret = env_value("LUMATRACK_SECRET_KEY")
     if env_secret:
         return env_secret
 
@@ -137,6 +580,11 @@ app.config["SECRET_KEY"] = load_or_create_secret()
 app.config["SESSION_COOKIE_NAME"] = "lumatrack_session"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = env_flag("LUMATRACK_SESSION_COOKIE_SECURE", is_https_base_url())
+app.config["PREFERRED_URL_SCHEME"] = "https" if is_https_base_url() else "http"
+app.config["MAX_CONTENT_LENGTH"] = parse_positive_int(env_value("LUMATRACK_MAX_CONTENT_LENGTH"), 1024 * 1024)
+if env_flag("LUMATRACK_TRUST_PROXY"):
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 oauth = OAuth(app)
 
 
@@ -145,57 +593,17 @@ def utc_now():
 
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as connection:
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE,
-                display_name TEXT NOT NULL,
-                password_hash TEXT,
-                avatar_url TEXT,
-                created_at TEXT NOT NULL,
-                last_login_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS user_identities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                provider TEXT NOT NULL,
-                provider_subject TEXT NOT NULL,
-                email TEXT,
-                created_at TEXT NOT NULL,
-                UNIQUE(provider, provider_subject),
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS user_states (
-                user_id INTEGER PRIMARY KEY,
-                state_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS api_tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                label TEXT NOT NULL,
-                token_hash TEXT NOT NULL UNIQUE,
-                token_preview TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                last_used_at TEXT,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-            """
-        )
+    connection = open_database_connection()
+    try:
+        connection.executescript(POSTGRES_SCHEMA if connection.backend == "postgres" else SQLITE_SCHEMA)
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA foreign_keys = ON")
+        g.db = open_database_connection()
     return g.db
 
 
@@ -208,9 +616,12 @@ def close_db(_error):
 
 def register_oauth_clients():
     for provider, definition in PROVIDER_CONFIG.items():
-        client_id = os.environ.get(definition["client_id_env"])
-        client_secret = os.environ.get(definition["client_secret_env"])
-        if not client_id or not client_secret:
+        credentials = resolve_provider_credentials(provider, definition)
+        client_id = credentials["client_id"]
+        client_secret = credentials["client_secret"]
+        if not credentials["configured"]:
+            if credentials["error"]:
+                print(f"[oauth] {definition['label']} not configured: {credentials['error']}", flush=True)
             continue
 
         payload = {
@@ -230,18 +641,68 @@ def register_oauth_clients():
 def provider_status():
     statuses = []
     for provider, definition in PROVIDER_CONFIG.items():
-        client_id = os.environ.get(definition["client_id_env"])
-        client_secret = os.environ.get(definition["client_secret_env"])
-        configured = bool(client_id and client_secret)
+        credentials = resolve_provider_credentials(provider, definition)
+        configured = credentials["configured"]
+        callback_path = url_for("auth_callback", provider=provider)
         statuses.append(
             {
                 "id": provider,
                 "label": definition["label"],
                 "configured": configured,
                 "loginUrl": url_for("login_provider", provider=provider) if configured else None,
+                "callbackUrl": public_url(callback_path),
+                "requiredEnv": provider_requirements(provider, definition)["requiredEnv"],
+                "missingEnv": provider_missing_env(provider, definition),
+                "error": credentials["error"],
             }
         )
     return statuses
+
+
+def pop_auth_error():
+    return session.pop("auth_error", "")
+
+
+def set_auth_error(provider, error):
+    label = PROVIDER_CONFIG.get(provider, {}).get("label", provider.title())
+    message = str(error).strip()
+    session["auth_error"] = f"{label} sign-in failed. {message}" if message else f"{label} sign-in failed."
+
+
+def parse_apple_profile():
+    if request.method != "POST":
+        return {}
+
+    raw_user = request.form.get("user")
+    if not raw_user:
+        return {}
+
+    try:
+        payload = json.loads(raw_user)
+    except json.JSONDecodeError:
+        return {}
+
+    profile = {}
+    email = normalize_email(payload.get("email"))
+    if email:
+        profile["email"] = email
+
+    name = payload.get("name") or {}
+    first_name = (name.get("firstName") or "").strip()
+    last_name = (name.get("lastName") or "").strip()
+    full_name = " ".join(part for part in [first_name, last_name] if part)
+    if full_name:
+        profile["name"] = full_name
+
+    return profile
+
+
+def merge_userinfo(base, extra):
+    merged = dict(base or {})
+    for key, value in (extra or {}).items():
+        if value and not merged.get(key):
+            merged[key] = value
+    return merged
 
 
 def get_current_user():
@@ -382,15 +843,13 @@ def save_state_for_user(user_id, state):
 
 def create_user(email, display_name, password_hash=None, avatar_url=None):
     now = utc_now()
-    cursor = get_db().execute(
+    user_id = execute_insert_returning_id(
         """
         INSERT INTO users (email, display_name, password_hash, avatar_url, created_at, last_login_at)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
         (normalize_email(email) or None, display_name, password_hash, avatar_url, now, now),
     )
-    user_id = cursor.lastrowid
-    get_db().commit()
     save_state_for_user(user_id, default_state(display_name))
     return user_id
 
@@ -694,12 +1153,41 @@ def get_bearer_token():
     return request.headers.get("X-LumaTrack-Token", "").strip()
 
 
+@app.before_request
+def enforce_request_security():
+    hosts = allowed_hosts()
+    request_host = request.host.lower()
+    hostname_only = request_host.split(":", 1)[0]
+    if hosts and request_host not in hosts and hostname_only not in hosts:
+        abort(400)
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        exempt_paths = {
+            "/api/ingest/observation",
+            "/auth/callback/google",
+            "/auth/callback/facebook",
+            "/auth/callback/apple",
+        }
+        if request.path not in exempt_paths and not validate_csrf():
+            return jsonify({"error": "CSRF validation failed."}), 403
+
+
 @app.after_request
 def apply_headers(response):
     if request.path.startswith("/api/ingest/"):
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-LumaTrack-Token"
         response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Content-Security-Policy"] = security_csp()
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["Origin-Agent-Cluster"] = "?1"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if is_https_base_url():
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
@@ -711,11 +1199,14 @@ def api_bootstrap():
             "authenticated": bool(user),
             "user": serialize_user(user) if user else None,
             "providers": provider_status(),
+            "error": pop_auth_error(),
         },
         "app": {
-            "baseUrl": request.host_url.rstrip("/"),
+            "baseUrl": current_base_url(),
+            "csrfToken": ensure_csrf_token(),
             "schemaVersion": SCHEMA_VERSION,
             "companionReady": True,
+            "storageBackend": get_db().backend,
         },
         "connectors": CONNECTOR_DEFINITIONS,
         "tokens": [],
@@ -729,15 +1220,20 @@ def api_bootstrap():
 
 @app.route("/api/auth/register", methods=["POST"])
 def api_register():
+    limited = enforce_rate_limit("auth-register", 5, 600)
+    if limited:
+        return limited
+
     payload = request.get_json(silent=True) or {}
     email = normalize_email(payload.get("email"))
     password = payload.get("password") or ""
     display_name = (payload.get("displayName") or "").strip() or email.split("@")[0]
+    minimum_length = parse_positive_int(env_value("LUMATRACK_MIN_PASSWORD_LENGTH"), 12)
 
     if not email or "@" not in email:
         return jsonify({"error": "A valid email address is required."}), 400
-    if len(password) < 8:
-        return jsonify({"error": "Password must be at least 8 characters."}), 400
+    if len(password) < minimum_length:
+        return jsonify({"error": f"Password must be at least {minimum_length} characters."}), 400
 
     existing = get_db().execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
     if existing:
@@ -754,12 +1250,17 @@ def api_register():
             "user": serialize_user(dict(user)),
             "state": load_state_for_user(user_id, display_name),
             "tokens": [],
+            "csrfToken": ensure_csrf_token(),
         }
     )
 
 
 @app.route("/api/auth/login", methods=["POST"])
 def api_login():
+    limited = enforce_rate_limit("auth-login", 10, 600)
+    if limited:
+        return limited
+
     payload = request.get_json(silent=True) or {}
     email = normalize_email(payload.get("email"))
     password = payload.get("password") or ""
@@ -782,6 +1283,7 @@ def api_login():
             "user": serialize_user(user),
             "state": load_state_for_user(user["id"], user["display_name"]),
             "tokens": get_api_tokens_for_user(user["id"]),
+            "csrfToken": ensure_csrf_token(),
         }
     )
 
@@ -789,36 +1291,49 @@ def api_login():
 @app.route("/api/auth/logout", methods=["POST"])
 def api_logout():
     session.clear()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "csrfToken": ensure_csrf_token()})
 
 
 @app.route("/auth/login/<provider>")
 def login_provider(provider):
+    limited = enforce_rate_limit(f"oauth-{provider}", 20, 600)
+    if limited:
+        return limited
+
     client = oauth.create_client(provider)
     if client is None:
         abort(404)
 
-    redirect_uri = url_for("auth_callback", provider=provider, _external=True)
+    pop_auth_error()
+    redirect_uri = public_url(url_for("auth_callback", provider=provider))
+    if provider == "apple":
+        return client.authorize_redirect(redirect_uri, response_mode="form_post")
     return client.authorize_redirect(redirect_uri)
 
 
-@app.route("/auth/callback/<provider>")
+@app.route("/auth/callback/<provider>", methods=["GET", "POST"])
 def auth_callback(provider):
     client = oauth.create_client(provider)
     if client is None:
         abort(404)
 
-    token = client.authorize_access_token()
-    if provider in {"google", "apple"}:
-        userinfo = token.get("userinfo")
-        if not userinfo:
-            userinfo = client.parse_id_token(token)
-    else:
-        response = client.get("me?fields=id,name,email,picture.type(large)")
-        response.raise_for_status()
-        userinfo = response.json()
+    try:
+        token = client.authorize_access_token()
+        if provider in {"google", "apple"}:
+            userinfo = token.get("userinfo")
+            if not userinfo:
+                userinfo = client.parse_id_token(token)
+            if provider == "apple":
+                userinfo = merge_userinfo(userinfo, parse_apple_profile())
+        else:
+            response = client.get("me?fields=id,name,email,picture.type(large)")
+            response.raise_for_status()
+            userinfo = response.json()
+        user_id = resolve_oauth_user(provider, userinfo)
+    except Exception as error:
+        set_auth_error(provider, error)
+        return redirect(url_for("index"))
 
-    user_id = resolve_oauth_user(provider, userinfo)
     session["user_id"] = user_id
     return redirect(url_for("index"))
 
@@ -925,6 +1440,10 @@ def api_get_tokens():
 @app.route("/api/tokens", methods=["POST"])
 @login_required
 def api_create_token():
+    limited = enforce_rate_limit("token-create", 20, 600)
+    if limited:
+        return limited
+
     payload = request.get_json(silent=True) or {}
     label = (payload.get("label") or "").strip() or "Browser companion"
     raw_token = secrets.token_urlsafe(24)
@@ -957,6 +1476,10 @@ def api_delete_token(token_id):
 def api_ingest_observation():
     if request.method == "OPTIONS":
         return ("", 204)
+
+    limited = enforce_rate_limit("ingest", 120, 60)
+    if limited:
+        return limited
 
     raw_token = get_bearer_token()
     if not raw_token:
@@ -1003,6 +1526,6 @@ create_app()
 
 
 if __name__ == "__main__":
-    host = os.environ.get("LUMATRACK_HOST", "127.0.0.1")
-    port = int(os.environ.get("LUMATRACK_PORT", "5000"))
+    host = env_value("LUMATRACK_HOST") or "127.0.0.1"
+    port = int(env_value("LUMATRACK_PORT") or "5000")
     app.run(host=host, port=port, debug=False)

@@ -29,7 +29,8 @@ let connectorDefinitions = CONNECTOR_DEFINITIONS;
 let auth = {
   authenticated: false,
   user: null,
-  providers: []
+  providers: [],
+  error: ""
 };
 let tokens = [];
 let state = createSeedState();
@@ -81,6 +82,7 @@ async function initialize() {
   const bootstrap = await fetchBootstrap();
   connectorDefinitions = bootstrap.connectors || CONNECTOR_DEFINITIONS;
   auth = bootstrap.auth || auth;
+  ui.authError = auth.error || "";
   appConfig = bootstrap.app || appConfig;
   tokens = Array.isArray(bootstrap.tokens) ? bootstrap.tokens : [];
   if (auth.authenticated && bootstrap.state) {
@@ -838,6 +840,7 @@ function render() {
 function renderAuthView() {
   const availableProviders = auth.providers.filter((provider) => provider.configured);
   const inactiveProviders = auth.providers.filter((provider) => !provider.configured);
+  const setupCards = inactiveProviders.map((provider) => renderProviderSetupCard(provider)).join("");
 
   return `
     <section class="hero-grid auth-grid">
@@ -845,7 +848,7 @@ function renderAuthView() {
         <span class="eyebrow">Real account layer</span>
         <h1 class="hero-title">LumaTrack now supports real user accounts.</h1>
         <p class="hero-copy">
-          Sign in with a local account right away. Google, Facebook, and Apple sign-in routes are already wired into the backend and appear here automatically once their OAuth credentials are configured in the server environment.
+          Sign in with a local account right away. Google, Facebook, and Apple sign-in routes are already wired into the backend and appear here automatically once their OAuth credentials are configured in <code>.env</code> or the server environment.
         </p>
         <div class="support-list">
           ${renderSupportCard("Accounts", "Server-backed state", "Your titles, sessions, and companion tokens live in SQLite instead of one browser tab.")}
@@ -853,6 +856,7 @@ function renderAuthView() {
           ${renderSupportCard("Companion", "Token-based ingest", "A browser helper can send playback observations into your account through a secure token.")}
           ${renderSupportCard("Portability", "Optional file sync", "You can still export snapshots or link a local JSON file when needed.")}
         </div>
+        ${setupCards ? `<div class="support-copy">Provider setup</div><div class="support-list">${setupCards}</div>` : ""}
       </article>
 
       <aside class="hero-card auth-card">
@@ -870,11 +874,32 @@ function renderAuthView() {
         ${ui.authError ? `<div class="panel-note">${escapeHtml(ui.authError)}</div>` : ""}
         <div class="support-copy">Configured providers</div>
         <div class="provider-grid">
-          ${availableProviders.length ? availableProviders.map((provider) => `<a class="button secondary provider-button" href="${provider.loginUrl}">Continue with ${escapeHtml(provider.label)}</a>`).join("") : `<div class="empty-state"><h3>No provider logins are active yet.</h3><p>Set the provider credentials in the server environment to enable Google, Facebook, or Apple sign-in.</p></div>`}
+          ${availableProviders.length ? availableProviders.map((provider) => `<a class="button secondary provider-button" href="${provider.loginUrl}">Continue with ${escapeHtml(provider.label)}</a>`).join("") : `<div class="empty-state"><h3>No provider logins are active yet.</h3><p>Add provider credentials in <code>.env</code> or the server environment to enable Google, Facebook, or Apple sign-in.</p></div>`}
         </div>
         ${inactiveProviders.length ? `<div class="panel-note">${inactiveProviders.map((provider) => provider.label).join(", ")} login hooks are present in code but need OAuth credentials before they can be used.</div>` : ""}
       </aside>
     </section>
+  `;
+}
+
+function renderProviderSetupCard(provider) {
+  const missingEnv = Array.isArray(provider.missingEnv) ? provider.missingEnv : [];
+  const requiredEnv = Array.isArray(provider.requiredEnv) ? provider.requiredEnv : [];
+  const requirementLine = missingEnv.length
+    ? `Missing: ${missingEnv.join(", ")}`
+    : requiredEnv.length
+      ? `Required: ${requiredEnv.join(", ")}`
+      : "Check provider configuration.";
+  const errorLine = provider.error ? `<div class="panel-note">${escapeHtml(provider.error)}</div>` : "";
+
+  return `
+    <article class="support-card">
+      <div class="support-label">${escapeHtml(provider.label)}</div>
+      <h3>Callback URL</h3>
+      <p><code>${escapeHtml(provider.callbackUrl || "")}</code></p>
+      <p>${escapeHtml(requirementLine)}</p>
+      ${errorLine}
+    </article>
   `;
 }
 
@@ -887,7 +912,7 @@ function renderLoginForm() {
       </label>
       <label class="form-field">
         <span>Password</span>
-        <input class="search-bar" name="password" type="password" placeholder="At least 8 characters" required>
+        <input class="search-bar" name="password" type="password" placeholder="At least 12 characters" required>
       </label>
       <button class="button" type="submit" ${ui.authBusy ? "disabled" : ""}>${ui.authBusy ? "Signing in..." : "Sign in"}</button>
     </form>
@@ -907,7 +932,7 @@ function renderRegisterForm() {
       </label>
       <label class="form-field">
         <span>Password</span>
-        <input class="search-bar" name="password" type="password" placeholder="At least 8 characters" required>
+        <input class="search-bar" name="password" type="password" placeholder="At least 12 characters" required>
       </label>
       <button class="button" type="submit" ${ui.authBusy ? "disabled" : ""}>${ui.authBusy ? "Creating..." : "Create account"}</button>
     </form>
