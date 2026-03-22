@@ -722,69 +722,53 @@ select:focus-visible {
   gap: 0.65rem;
 }
 
+.auth-word-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.auth-word-row span,
 .auth-platform-strip span {
-  padding: 0.55rem 0.9rem;
+  padding: 0.5rem 0.85rem;
   border-radius: 999px;
   background: rgba(31, 35, 39, 0.06);
   border: 1px solid rgba(56, 48, 40, 0.08);
   color: var(--ink-soft);
-  font-size: 0.88rem;
-}
-
-.auth-feature-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.8rem;
-}
-
-.auth-quote {
-  display: grid;
-  gap: 0.45rem;
-  margin-top: auto;
-  padding: 1rem 1.1rem;
-  border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.1), rgba(37, 99, 235, 0.08));
-  border: 1px solid rgba(15, 118, 110, 0.12);
-}
-
-.auth-quote strong {
-  font-family: var(--font-display);
-  font-size: 1.05rem;
-  letter-spacing: -0.02em;
-}
-
-.auth-quote span {
-  color: var(--ink-soft);
-  line-height: 1.6;
+  font-size: 0.84rem;
+  letter-spacing: 0.02em;
 }
 
 .auth-subcopy {
   margin: 0;
   color: var(--ink-soft);
-  line-height: 1.6;
+  line-height: 1.5;
+  font-size: 0.94rem;
 }
 
 .auth-trust-list {
-  display: grid;
-  gap: 0.7rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
   margin-top: auto;
 }
 
 .auth-trust-item {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 0.7rem;
-  padding: 0.85rem 0.95rem;
-  border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.72);
+  gap: 0.55rem;
+  padding: 0.55rem 0.8rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(56, 48, 40, 0.08);
   color: var(--ink-soft);
+  font-size: 0.85rem;
 }
 
 .auth-trust-item::before {
   content: "";
-  width: 0.55rem;
-  height: 0.55rem;
+  width: 0.45rem;
+  height: 0.45rem;
   border-radius: 999px;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   flex: 0 0 auto;
@@ -1064,7 +1048,6 @@ select:focus-visible {
   .sync-grid,
   .stats-grid,
   .support-list,
-  .auth-feature-grid,
   .form-grid,
   .result-card {
     grid-template-columns: 1fr;

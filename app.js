@@ -841,38 +841,33 @@ function renderAuthView() {
   const availableProviders = auth.providers.filter((provider) => provider.configured);
   const providerButtons = availableProviders.length
     ? `
-        <div class="support-copy">Or continue with</div>
+        <div class="support-copy">Or use</div>
         <div class="provider-grid">
           ${availableProviders.map((provider) => `<a class="button secondary provider-button" href="${provider.loginUrl}">Continue with ${escapeHtml(provider.label)}</a>`).join("")}
         </div>
       `
-    : `<p class="auth-subcopy">Email sign-in is available now. More sign-in options can be added as Watchnest expands.</p>`;
+    : `<p class="auth-subcopy">Email first.</p>`;
 
   return `
     <section class="hero-grid auth-grid">
       <article class="hero-card auth-hero">
-        <span class="eyebrow">Personal watch home</span>
-        <h1 class="hero-title">One place for everything you watch.</h1>
-        <p class="hero-copy">
-          Watchnest keeps your movies, shows, progress, and next picks together in one calm space, so picking up tonight's watch feels effortless instead of scattered.
-        </p>
+        <span class="eyebrow">Watch home</span>
+        <h1 class="hero-title">Everything you watch.</h1>
+        <p class="hero-copy">Track. Queue. Resume.</p>
+        <div class="auth-word-row">
+          <span>Movies</span>
+          <span>Shows</span>
+          <span>Progress</span>
+          <span>Queue</span>
+          <span>Sync</span>
+        </div>
         <div class="auth-platform-strip">
           <span>Netflix</span>
-          <span>Prime Video</span>
+          <span>Prime</span>
           <span>Disney+</span>
           <span>Max</span>
           <span>Apple TV+</span>
           <span>Plex</span>
-        </div>
-        <div class="auth-feature-grid">
-          ${renderSupportCard("Remember", "Pick up instantly", "See what you started, what you finished, and what you meant to come back to without hunting across apps.")}
-          ${renderSupportCard("Organize", "Build your own watch rhythm", "Keep a personal library for comfort rewatches, new releases, and the shows you are saving for later.")}
-          ${renderSupportCard("Sync", "Stay in step across devices", "Your library travels with you, whether you check in from your laptop, desktop, or a shared home setup.")}
-          ${renderSupportCard("Simple", "Designed to stay out of the way", "Flat, fast, and clean by default, with just enough detail to feel useful every time you open it.")}
-        </div>
-        <div class="auth-quote">
-          <strong>Your watchlist should feel personal, not procedural.</strong>
-          <span>That is the idea behind Watchnest: one clear home for the stories you are in the middle of.</span>
         </div>
       </article>
 
@@ -880,7 +875,7 @@ function renderAuthView() {
         <div class="panel-head">
           <div>
             <h2>${ui.authMode === "login" ? "Welcome back" : "Create your space"}</h2>
-            <p>${ui.authMode === "login" ? "Sign in to continue your library, progress, and saved picks." : "Start your own private watch hub in under a minute."}</p>
+            <p>${ui.authMode === "login" ? "Library. Progress. Picks." : "Start in seconds."}</p>
           </div>
         </div>
         <div class="filter-row">
@@ -891,9 +886,9 @@ function renderAuthView() {
         ${ui.authError ? `<div class="panel-note">${escapeHtml(ui.authError)}</div>` : ""}
         ${providerButtons}
         <div class="auth-trust-list">
-          <div class="auth-trust-item">Private account and synced watch history</div>
-          <div class="auth-trust-item">Fast title search across shows and movies</div>
-          <div class="auth-trust-item">A cleaner way to decide what to watch next</div>
+          <div class="auth-trust-item">Private</div>
+          <div class="auth-trust-item">Fast</div>
+          <div class="auth-trust-item">Synced</div>
         </div>
       </aside>
     </section>
