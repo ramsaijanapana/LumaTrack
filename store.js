@@ -42,7 +42,7 @@ export async function linkSyncFile(state) {
   }
 
   const handle = await window.showSaveFilePicker({
-    suggestedName: "lumatrack-sync.json",
+    suggestedName: "watchnest-sync.json",
     types: [
       {
         description: "JSON snapshot",
@@ -101,7 +101,7 @@ export function downloadSnapshot(state) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = "lumatrack-export.json";
+  anchor.download = "watchnest-export.json";
   anchor.click();
   URL.revokeObjectURL(url);
 }

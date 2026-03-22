@@ -23,7 +23,7 @@ ENV_PATH = ROOT_DIR / ".env"
 DB_PATH = ROOT_DIR / "lumatrack.db"
 SECRET_PATH = ROOT_DIR / ".lumatrack.secret"
 SCHEMA_VERSION = 2
-HTTP_HEADERS = {"User-Agent": "LumaTrack/0.1 (local watch tracker)"}
+HTTP_HEADERS = {"User-Agent": "Watchnest/0.1 (watch tracker)"}
 APPLE_AUDIENCE = "https://appleid.apple.com"
 APPLE_CLIENT_SECRET_CACHE = {}
 PUBLIC_BASE_URL_ENV = "LUMATRACK_PUBLIC_BASE_URL"
@@ -740,7 +740,7 @@ def default_state(display_name):
     return {
         "meta": {
             "schemaVersion": SCHEMA_VERSION,
-            "appName": "LumaTrack",
+            "appName": "Watchnest",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -796,7 +796,7 @@ def load_state_for_user(user_id, display_name):
     state = json.loads(row["state_json"])
     state.setdefault("meta", {})
     state["meta"]["schemaVersion"] = SCHEMA_VERSION
-    state["meta"].setdefault("appName", "LumaTrack")
+    state["meta"].setdefault("appName", "Watchnest")
     state["meta"].setdefault("updatedAt", utc_now())
     state.setdefault("profile", {})
     state["profile"]["name"] = display_name or state["profile"].get("name") or "Viewer"
@@ -821,7 +821,7 @@ def save_state_for_user(user_id, state):
     now = utc_now()
     state.setdefault("meta", {})
     state["meta"]["schemaVersion"] = SCHEMA_VERSION
-    state["meta"]["appName"] = "LumaTrack"
+    state["meta"]["appName"] = "Watchnest"
     state["meta"]["updatedAt"] = now
     state.setdefault("sync", {})
     if state["sync"].get("mode") == "cloud" or not state["sync"].get("mode"):
@@ -993,7 +993,7 @@ def apply_observation_to_state(state, observation):
     target["platformId"] = platform_id
     target["kind"] = kind
     target["currentUnit"] = observation.get("currentUnit") or target.get("currentUnit") or current_unit
-    target["summary"] = observation.get("summary") or target.get("summary") or "Tracked in LumaTrack."
+    target["summary"] = observation.get("summary") or target.get("summary") or "Tracked in Watchnest."
     if observation.get("year"):
         target["year"] = observation["year"]
     if observation.get("genres"):

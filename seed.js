@@ -60,7 +60,7 @@ export function createSeedState(displayName = "Viewer", connectorDefinitions = C
   return {
     meta: {
       schemaVersion: 2,
-      appName: "LumaTrack",
+      appName: "Watchnest",
       createdAt: now,
       updatedAt: now
     },
@@ -117,7 +117,7 @@ export function normalizeState(candidate, connectorDefinitions = CONNECTOR_DEFIN
       ...base.meta,
       ...(candidate.meta || {}),
       schemaVersion: 2,
-      appName: "LumaTrack"
+      appName: "Watchnest"
     },
     profile: {
       ...base.profile,
@@ -161,7 +161,7 @@ export function createTitleFromMetadata(result, platformId = "netflix") {
     progress: 0,
     genres: Array.isArray(result.genres) ? result.genres.slice(0, 3) : [],
     currentUnit: result.currentUnit || (result.kind === "movie" ? "Movie" : "S1 E1"),
-    summary: result.summary || "Tracked in LumaTrack.",
+    summary: result.summary || "Tracked in Watchnest.",
     lastActivityAt: now,
     favorite: false,
     image: result.image || "",
@@ -181,7 +181,7 @@ function normalizeTitles(titles) {
     progress: clampNumber(title.progress, 0, 100),
     genres: Array.isArray(title.genres) ? title.genres.slice(0, 3) : [],
     currentUnit: title.currentUnit || (title.kind === "movie" ? "Movie" : "S1 E1"),
-    summary: title.summary || "Tracked in LumaTrack.",
+    summary: title.summary || "Tracked in Watchnest.",
     lastActivityAt: isValidDate(title.lastActivityAt) ? title.lastActivityAt : new Date().toISOString(),
     favorite: Boolean(title.favorite),
     image: title.image || "",

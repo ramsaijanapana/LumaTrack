@@ -1,6 +1,6 @@
 # Render Deployment
 
-This is the simplest free starting path for getting LumaTrack online.
+This is the simplest free starting path for getting Watchnest online.
 
 ## What is already prepared
 

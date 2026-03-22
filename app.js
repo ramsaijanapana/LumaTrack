@@ -652,7 +652,7 @@ async function persistAndRender({ saveRemote = false, syncLinked = false, toast 
 
 function render() {
   if (!auth.authenticated) {
-    document.title = "LumaTrack | Your watch home";
+    document.title = "Watchnest | Your watch home";
     appElement.innerHTML = renderAuthView();
     return;
   }
@@ -671,7 +671,7 @@ function render() {
           <span class="brand-mark" aria-hidden="true">LT</span>
           <div>
             <span class="eyebrow">Account-backed tracker</span>
-            <h1 class="brand-title">LumaTrack</h1>
+            <h1 class="brand-title">Watchnest</h1>
           </div>
         </div>
         <p class="brand-copy">Cloud-backed watch tracking with metadata search, companion tokens, and optional linked file sync.</p>
@@ -834,7 +834,7 @@ function render() {
       </section>
     </section>
   `;
-  document.title = `LumaTrack | ${stats.totalTitles} tracked`;
+  document.title = `Watchnest | ${stats.totalTitles} tracked`;
 }
 
 function renderAuthView() {
@@ -846,7 +846,7 @@ function renderAuthView() {
           ${availableProviders.map((provider) => `<a class="button secondary provider-button" href="${provider.loginUrl}">Continue with ${escapeHtml(provider.label)}</a>`).join("")}
         </div>
       `
-    : `<p class="auth-subcopy">Email sign-in is available now. More sign-in options can be added as LumaTrack expands.</p>`;
+    : `<p class="auth-subcopy">Email sign-in is available now. More sign-in options can be added as Watchnest expands.</p>`;
 
   return `
     <section class="hero-grid auth-grid">
@@ -854,7 +854,7 @@ function renderAuthView() {
         <span class="eyebrow">Personal watch home</span>
         <h1 class="hero-title">One place for everything you watch.</h1>
         <p class="hero-copy">
-          LumaTrack keeps your movies, shows, progress, and next picks together in one calm space, so picking up tonight's watch feels effortless instead of scattered.
+          Watchnest keeps your movies, shows, progress, and next picks together in one calm space, so picking up tonight's watch feels effortless instead of scattered.
         </p>
         <div class="auth-platform-strip">
           <span>Netflix</span>
@@ -872,7 +872,7 @@ function renderAuthView() {
         </div>
         <div class="auth-quote">
           <strong>Your watchlist should feel personal, not procedural.</strong>
-          <span>That is the idea behind LumaTrack: one clear home for the stories you are in the middle of.</span>
+          <span>That is the idea behind Watchnest: one clear home for the stories you are in the middle of.</span>
         </div>
       </article>
 
@@ -1392,7 +1392,7 @@ function buildTitlePayloadFromEditor() {
       .filter(Boolean)
       .slice(0, 3),
     currentUnit: ui.editor.currentUnit || (kind === "movie" ? "Movie" : "S1 E1"),
-    summary: ui.editor.summary || "Tracked in LumaTrack.",
+    summary: ui.editor.summary || "Tracked in Watchnest.",
     lastActivityAt: new Date().toISOString(),
     favorite: lookupTitle(ui.editor.titleId)?.favorite || false,
     image: ui.editor.image || "",

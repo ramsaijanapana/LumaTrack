@@ -1,4 +1,4 @@
-const CACHE_NAME = "lumatrack-v2";
+const CACHE_NAME = "watchnest-v3";
 const CORE_ASSETS = [
   "./",
   "./index.html",

@@ -1,6 +1,6 @@
 {
-  "name": "LumaTrack",
-  "short_name": "LumaTrack",
+  "name": "Watchnest",
+  "short_name": "Watchnest",
   "description": "Account-backed watch tracker with metadata search, companion ingest, and optional linked file sync.",
   "display": "standalone",
   "start_url": "./",

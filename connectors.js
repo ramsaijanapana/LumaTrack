@@ -101,7 +101,7 @@ export function createManualSession(title, options = {}) {
     device: options.device || "This device",
     summary:
       progressAfter >= 100
-        ? `${title.title} was marked complete from inside LumaTrack.`
+        ? `${title.title} was marked complete from inside Watchnest.`
         : `${title.title} advanced with a manual progress check-in.`
   };
 }

@@ -1,6 +1,6 @@
-# LumaTrack
+# Watchnest
 
-LumaTrack is now a server-backed watch tracker instead of a browser-only prototype. It keeps per-user library state in SQLite, supports local account sign-in immediately, exposes OAuth hooks for Google/Facebook/Apple, and includes a browser companion extension flow for ingesting watch observations.
+Watchnest is now a server-backed watch tracker instead of a browser-only prototype. It keeps per-user library state in SQLite, supports local account sign-in immediately, exposes OAuth hooks for Google/Facebook/Apple, and includes a browser companion extension flow for ingesting watch observations.
 
 ## What is usable now
 
@@ -29,6 +29,8 @@ The app now supports a safer hosted deployment posture:
 ## What still needs provider configuration
 
 Google, Facebook, and Apple login are implemented in the backend, but they only become clickable when their OAuth credentials are configured in `.env` or in the process environment.
+
+The public product name is `Watchnest`. The deployment env vars still use the `LUMATRACK_*` prefix for compatibility with the existing setup.
 
 That part is unavoidable. No web app can provide production OAuth sign-in for those providers without registered app credentials and redirect URIs.
 
@@ -117,7 +119,7 @@ The first real ingestion path lives in the `extension/` folder.
 1. Open your browser's extensions page.
 2. Enable developer mode.
 3. Load `extension/` as an unpacked extension.
-4. In LumaTrack, create a companion token.
+4. In Watchnest, create a companion token.
 5. Paste the app URL and token into the extension popup.
 6. Open a streaming page and click `Send observation`.
 

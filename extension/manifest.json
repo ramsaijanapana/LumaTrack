@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "LumaTrack Companion",
+  "name": "Watchnest Companion",
   "version": "0.1.0",
-  "description": "Capture the current OTT page and send a watch observation into LumaTrack.",
+  "description": "Capture the current OTT page and send a watch observation into Watchnest.",
   "permissions": ["storage", "activeTab", "scripting"],
-  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://*.onrender.com/*"],
   "action": {
-    "default_title": "LumaTrack Companion",
+    "default_title": "Watchnest Companion",
     "default_popup": "popup.html"
   }
 }
