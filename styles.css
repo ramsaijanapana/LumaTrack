@@ -709,69 +709,28 @@ select:focus-visible {
 
 .auth-hero {
   justify-content: center;
-  gap: 1.35rem;
+  gap: 1rem;
 }
 
 .auth-card {
   padding: 1.6rem;
 }
 
-.auth-platform-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.65rem;
-}
-
 .auth-word-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.65rem;
-}
-
-.auth-word-row span,
-.auth-platform-strip span {
-  padding: 0.5rem 0.85rem;
-  border-radius: 999px;
-  background: rgba(31, 35, 39, 0.06);
-  border: 1px solid rgba(56, 48, 40, 0.08);
-  color: var(--ink-soft);
-  font-size: 0.84rem;
-  letter-spacing: 0.02em;
-}
-
-.auth-subcopy {
-  margin: 0;
-  color: var(--ink-soft);
-  line-height: 1.5;
-  font-size: 0.94rem;
-}
-
-.auth-trust-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.65rem;
-  margin-top: auto;
-}
-
-.auth-trust-item {
-  display: inline-flex;
-  align-items: center;
   gap: 0.55rem;
-  padding: 0.55rem 0.8rem;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(56, 48, 40, 0.08);
-  color: var(--ink-soft);
-  font-size: 0.85rem;
 }
 
-.auth-trust-item::before {
-  content: "";
-  width: 0.45rem;
-  height: 0.45rem;
+.auth-word-row span {
+  padding: 0.45rem 0.75rem;
   border-radius: 999px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  flex: 0 0 auto;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(56, 48, 40, 0.07);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .support-card {

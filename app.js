@@ -846,28 +846,18 @@ function renderAuthView() {
           ${availableProviders.map((provider) => `<a class="button secondary provider-button" href="${provider.loginUrl}">Continue with ${escapeHtml(provider.label)}</a>`).join("")}
         </div>
       `
-    : `<p class="auth-subcopy">Email first.</p>`;
+    : "";
 
   return `
     <section class="hero-grid auth-grid">
       <article class="hero-card auth-hero">
         <span class="eyebrow">Watch home</span>
         <h1 class="hero-title">Everything you watch.</h1>
-        <p class="hero-copy">Track. Queue. Resume.</p>
+        <p class="hero-copy">Track. Resume. Repeat.</p>
         <div class="auth-word-row">
           <span>Movies</span>
           <span>Shows</span>
-          <span>Progress</span>
           <span>Queue</span>
-          <span>Sync</span>
-        </div>
-        <div class="auth-platform-strip">
-          <span>Netflix</span>
-          <span>Prime</span>
-          <span>Disney+</span>
-          <span>Max</span>
-          <span>Apple TV+</span>
-          <span>Plex</span>
         </div>
       </article>
 
@@ -875,7 +865,7 @@ function renderAuthView() {
         <div class="panel-head">
           <div>
             <h2>${ui.authMode === "login" ? "Welcome back" : "Create your space"}</h2>
-            <p>${ui.authMode === "login" ? "Library. Progress. Picks." : "Start in seconds."}</p>
+            <p>${ui.authMode === "login" ? "Sign in." : "Get started."}</p>
           </div>
         </div>
         <div class="filter-row">
@@ -885,11 +875,6 @@ function renderAuthView() {
         ${ui.authMode === "login" ? renderLoginForm() : renderRegisterForm()}
         ${ui.authError ? `<div class="panel-note">${escapeHtml(ui.authError)}</div>` : ""}
         ${providerButtons}
-        <div class="auth-trust-list">
-          <div class="auth-trust-item">Private</div>
-          <div class="auth-trust-item">Fast</div>
-          <div class="auth-trust-item">Synced</div>
-        </div>
       </aside>
     </section>
   `;
