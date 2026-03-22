@@ -1,6 +1,6 @@
 # Watchnest
 
-Watchnest is now a server-backed watch tracker instead of a browser-only prototype. It keeps per-user library state in SQLite, supports local account sign-in immediately, exposes OAuth hooks for Google/Facebook/Apple, and includes a browser companion extension flow for ingesting watch observations.
+Watchnest is now a server-backed watch tracker instead of a browser-only prototype. It keeps per-user library state in SQLite, supports local account sign-in immediately, exposes OAuth hooks for Google/Facebook/Apple, and includes real ingest paths for browser auto-capture plus Plex/Tautulli playback events.
 
 ## What is usable now
 
@@ -11,7 +11,9 @@ Watchnest is now a server-backed watch tracker instead of a browser-only prototy
 - Movies: Wikidata-backed lookup
 - Title add/edit/delete flows
 - Manual progress logging and unified activity timeline
-- Companion token flow plus a loadable browser extension popup
+- Browser auto-capture for Netflix, Prime Video, Disney+, Max, Apple TV+, and Plex web tabs
+- Plex webhook and Tautulli webhook ingest routes
+- Token-based manual fallback plus a loadable browser extension popup
 - Snapshot export/import and optional linked JSON file sync
 
 ## Production posture
@@ -112,30 +114,54 @@ The Apple callback route now accepts Apple's `form_post` response mode, and the 
 
 Google and Facebook login are fully implemented in the app code. They become active as soon as the registered OAuth client ID and client secret are present in `.env`, and the callback URL shown on the sign-in screen is added to the provider app settings.
 
-## Browser companion extension
+## Browser auto-capture extension
 
-The first real ingestion path lives in the `extension/` folder.
+The browser companion in `extension/` now has two modes:
+
+- Auto-capture on supported playback pages:
+  - Netflix
+  - Prime Video
+  - Disney+
+  - Max
+  - Apple TV+
+  - Plex web
+- Manual fallback on any page when auto-capture is unavailable or metadata detection needs help
+
+Setup:
 
 1. Open your browser's extensions page.
 2. Enable developer mode.
 3. Load `extension/` as an unpacked extension.
-4. In Watchnest, create a companion token.
-5. Paste the app URL and token into the extension popup.
-6. Open a streaming page and click `Send observation`.
+4. In Watchnest, create an ingest token.
+5. Paste the app URL and token into the extension popup and save.
+6. Grant access to your Watchnest origin when the extension asks.
+7. Open a supported playback page. The extension will post progress automatically in the background.
+8. Use `Send manually` in the popup when a site is unsupported or detection needs correction.
 
-That observation is posted to `POST /api/ingest/observation` and merged into your account.
+Auto-capture posts to `POST /api/ingest/observation` with absolute progress so repeated updates do not keep inflating the same title.
+
+## Plex and Tautulli
+
+Use the same ingest token for either of these:
+
+- Plex webhook URL:
+  - `https://your-watchnest-host/api/integrations/plex/webhook?token=YOUR_TOKEN`
+- Tautulli webhook URL:
+  - `https://your-watchnest-host/api/integrations/tautulli/webhook?token=YOUR_TOKEN`
+
+Supported Plex/Tautulli playback events are normalized into the same Watchnest timeline and connector state. Non-playback events are ignored safely.
 
 ## Storage model
 
 - Primary source of truth: SQLite (`lumatrack.db`)
 - Optional portability: exported snapshot JSON or linked sync file
-- Companion tokens are hashed before storage
+- Ingest tokens are hashed before storage
 
 ## Files
 
 - `server.py`: Flask app, auth, SQLite storage, metadata search, and ingest API
 - `app.js`: browser app controller and authenticated UI
 - `api.js`: frontend API client
-- `extension/`: unpacked browser companion
+- `extension/`: unpacked browser companion with background auto-capture
 - `DEPLOY_CLOUD_RUN.md`: hosted deployment guide for Cloud Run
 - `DEPLOY_RENDER.md`: simplest free hosted deployment path

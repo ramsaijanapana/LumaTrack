@@ -4,54 +4,54 @@ export const CONNECTOR_DEFINITIONS = [
     name: "Netflix",
     shortName: "Netflix",
     accent: "#e50914",
-    defaultMode: "Browser companion",
-    summary: "Extension-assisted capture for Netflix browsing and playback pages.",
-    capabilities: ["Companion capture", "Manual fallback", "Activity merge"]
+    defaultMode: "Browser auto-capture",
+    summary: "Background browser capture for Netflix playback pages, with manual fallback when needed.",
+    capabilities: ["Auto capture", "Manual fallback", "Activity merge"]
   },
   {
     id: "prime-video",
     name: "Prime Video",
     shortName: "Prime",
     accent: "#00a8e1",
-    defaultMode: "Browser companion",
-    summary: "Companion capture and imported sessions for Prime Video activity.",
-    capabilities: ["Companion capture", "Import bundle", "Queue sync"]
+    defaultMode: "Browser auto-capture",
+    summary: "Background browser capture for Prime Video playback, plus manual fallback.",
+    capabilities: ["Auto capture", "Manual fallback", "Queue sync"]
   },
   {
     id: "disney-plus",
     name: "Disney+",
     shortName: "Disney+",
     accent: "#113ccf",
-    defaultMode: "Browser companion",
-    summary: "Browser page detection and manual progress for Disney+ titles.",
-    capabilities: ["Companion capture", "Manual fallback", "Watchlist merge"]
+    defaultMode: "Browser auto-capture",
+    summary: "Background browser capture for Disney+ playback, with manual fallback kept available.",
+    capabilities: ["Auto capture", "Manual fallback", "Watchlist merge"]
   },
   {
     id: "max",
     name: "Max",
     shortName: "Max",
     accent: "#0057ff",
-    defaultMode: "Browser companion",
-    summary: "Companion capture for Max playback pages and queue updates.",
-    capabilities: ["Companion capture", "Continue watching", "Manual fallback"]
+    defaultMode: "Browser auto-capture",
+    summary: "Background browser capture for Max playback and continue-watching updates.",
+    capabilities: ["Auto capture", "Continue watching", "Manual fallback"]
   },
   {
     id: "apple-tv",
     name: "Apple TV+",
     shortName: "Apple TV+",
     accent: "#333333",
-    defaultMode: "Import or manual",
-    summary: "Manual and import-based tracking for Apple TV+ titles.",
-    capabilities: ["Manual fallback", "Import bundle", "Drive sync"]
+    defaultMode: "Browser auto-capture",
+    summary: "Background browser capture for Apple TV+ playback, with manual fallback retained.",
+    capabilities: ["Auto capture", "Manual fallback", "Drive sync"]
   },
   {
     id: "plex",
     name: "Plex / Jellyfin",
     shortName: "Plex",
     accent: "#d99000",
-    defaultMode: "Companion or webhook",
-    summary: "Local media playback can be ingested through the same event path.",
-    capabilities: ["Companion capture", "Webhook-ready", "Auto scrobble"]
+    defaultMode: "Webhook or auto-capture",
+    summary: "Plex and Tautulli can post playback directly, with browser/manual fallback available.",
+    capabilities: ["Plex webhook", "Tautulli", "Manual fallback"]
   }
 ];
 
@@ -137,12 +137,12 @@ export function normalizeState(candidate, connectorDefinitions = CONNECTOR_DEFIN
     },
     connectors: connectorDefinitions.map((definition) => ({
       id: definition.id,
-      mode: definition.defaultMode,
       status: "available",
       autoTrack: false,
       health: "idle",
       lastSeenAt: null,
-      ...(connectorLookup.get(definition.id) || {})
+      ...(connectorLookup.get(definition.id) || {}),
+      mode: definition.defaultMode
     })),
     titles: normalizeTitles(Array.isArray(candidate.titles) ? candidate.titles : []),
     sessions: normalizeSessions(Array.isArray(candidate.sessions) ? candidate.sessions : [])

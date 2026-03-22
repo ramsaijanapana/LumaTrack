@@ -140,54 +140,54 @@ CONNECTOR_DEFINITIONS = [
         "name": "Netflix",
         "shortName": "Netflix",
         "accent": "#e50914",
-        "defaultMode": "Browser companion",
-        "summary": "Extension-assisted capture for Netflix browsing and playback pages.",
-        "capabilities": ["Companion capture", "Manual fallback", "Activity merge"],
+        "defaultMode": "Browser auto-capture",
+        "summary": "Background browser capture for Netflix playback pages, with manual fallback when needed.",
+        "capabilities": ["Auto capture", "Manual fallback", "Activity merge"],
     },
     {
         "id": "prime-video",
         "name": "Prime Video",
         "shortName": "Prime",
         "accent": "#00a8e1",
-        "defaultMode": "Browser companion",
-        "summary": "Companion capture and imported sessions for Prime Video activity.",
-        "capabilities": ["Companion capture", "Import bundle", "Queue sync"],
+        "defaultMode": "Browser auto-capture",
+        "summary": "Background browser capture for Prime Video playback, plus manual fallback.",
+        "capabilities": ["Auto capture", "Manual fallback", "Queue sync"],
     },
     {
         "id": "disney-plus",
         "name": "Disney+",
         "shortName": "Disney+",
         "accent": "#113ccf",
-        "defaultMode": "Browser companion",
-        "summary": "Browser page detection and manual progress for Disney+ titles.",
-        "capabilities": ["Companion capture", "Manual fallback", "Watchlist merge"],
+        "defaultMode": "Browser auto-capture",
+        "summary": "Background browser capture for Disney+ playback, with manual fallback kept available.",
+        "capabilities": ["Auto capture", "Manual fallback", "Watchlist merge"],
     },
     {
         "id": "max",
         "name": "Max",
         "shortName": "Max",
         "accent": "#0057ff",
-        "defaultMode": "Browser companion",
-        "summary": "Companion capture for Max playback pages and queue updates.",
-        "capabilities": ["Companion capture", "Continue watching", "Manual fallback"],
+        "defaultMode": "Browser auto-capture",
+        "summary": "Background browser capture for Max playback and continue-watching updates.",
+        "capabilities": ["Auto capture", "Continue watching", "Manual fallback"],
     },
     {
         "id": "apple-tv",
         "name": "Apple TV+",
         "shortName": "Apple TV+",
         "accent": "#333333",
-        "defaultMode": "Import or manual",
-        "summary": "Manual and import-based tracking for Apple TV+ titles.",
-        "capabilities": ["Manual fallback", "Import bundle", "Drive sync"],
+        "defaultMode": "Browser auto-capture",
+        "summary": "Background browser capture for Apple TV+ playback, with manual fallback retained.",
+        "capabilities": ["Auto capture", "Manual fallback", "Drive sync"],
     },
     {
         "id": "plex",
         "name": "Plex / Jellyfin",
         "shortName": "Plex",
         "accent": "#d99000",
-        "defaultMode": "Companion or webhook",
-        "summary": "Local media playback can be ingested through the same event path.",
-        "capabilities": ["Companion capture", "Webhook-ready", "Auto scrobble"],
+        "defaultMode": "Webhook or auto-capture",
+        "summary": "Plex and Tautulli can post playback directly, with browser/manual fallback available.",
+        "capabilities": ["Plex webhook", "Tautulli", "Manual fallback"],
     },
 ]
 
@@ -895,6 +895,122 @@ def parse_year(value):
     return int(match.group(1)) if match else None
 
 
+def parse_int(value, default=0):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def parse_iso_timestamp(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def normalize_unit_key(value):
+    cleaned = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    return cleaned or ""
+
+
+def format_episode_label(season_number=None, episode_number=None):
+    if season_number and episode_number:
+        return f"S{season_number} E{episode_number}"
+    if episode_number:
+        return f"Episode {episode_number}"
+    return ""
+
+
+def normalize_event_type(value):
+    raw = (value or "").strip().lower()
+    if raw in {"media.play", "play", "playing", "playback.start", "started"}:
+        return "play"
+    if raw in {"media.resume", "resume", "resumed", "playback.resume"}:
+        return "resume"
+    if raw in {"media.pause", "pause", "paused", "playback.pause"}:
+        return "pause"
+    if raw in {"media.stop", "stop", "stopped", "playback.stop"}:
+        return "stop"
+    if raw in {"media.scrobble", "ended", "end", "complete", "completed", "watched", "playback.scrobble"}:
+        return "ended"
+    if raw in {"progress", "timeupdate", "heartbeat", "tick"}:
+        return "progress"
+    return raw or "progress"
+
+
+def parse_progress_percent(observation):
+    raw_value = observation.get("progressPercent")
+    if raw_value in {None, ""}:
+        return None
+    try:
+        return clamp(int(round(float(raw_value))), 0, 100)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_duration_minutes(kind, observation):
+    explicit_minutes = observation.get("durationMin")
+    if explicit_minutes not in {None, ""}:
+        return max(1, parse_int(explicit_minutes, 44 if kind == "show" else 96))
+
+    duration_seconds = observation.get("durationSeconds")
+    if duration_seconds not in {None, ""}:
+        return max(1, round(parse_int(duration_seconds, 0) / 60))
+
+    duration_ms = observation.get("durationMs")
+    if duration_ms not in {None, ""}:
+        return max(1, round(parse_int(duration_ms, 0) / 60000))
+
+    return 44 if kind == "show" else 96
+
+
+def coerce_list(value):
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
+def merge_or_insert_session(sessions, session_entry):
+    current_unit = normalize_unit_key(session_entry.get("currentUnit"))
+    started_at = parse_iso_timestamp(session_entry.get("startedAt")) or datetime.now(timezone.utc)
+
+    for existing in sessions[:8]:
+        existing_started = parse_iso_timestamp(existing.get("startedAt"))
+        if not existing_started:
+            continue
+        if abs((started_at - existing_started).total_seconds()) > 90 * 60:
+            continue
+        if existing.get("titleId") != session_entry.get("titleId"):
+            continue
+        if existing.get("platformId") != session_entry.get("platformId"):
+            continue
+        if (existing.get("sourceLabel") or "") != (session_entry.get("sourceLabel") or ""):
+            continue
+        if normalize_unit_key(existing.get("currentUnit")) != current_unit:
+            continue
+
+        existing["startedAt"] = session_entry["startedAt"]
+        existing["durationMin"] = max(parse_int(existing.get("durationMin"), 0), session_entry["durationMin"])
+        existing["progressAfter"] = max(parse_int(existing.get("progressAfter"), 0), session_entry["progressAfter"])
+        existing["summary"] = session_entry["summary"]
+        existing["device"] = session_entry["device"]
+        existing["eventType"] = session_entry.get("eventType") or existing.get("eventType")
+        existing["currentUnit"] = session_entry.get("currentUnit") or existing.get("currentUnit")
+        return existing
+
+    sessions.insert(0, session_entry)
+    return session_entry
+
+
 def token_hash(raw_token):
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
@@ -942,16 +1058,49 @@ def mark_token_used(token_id):
     get_db().commit()
 
 
+def get_request_token(payload=None):
+    token = get_bearer_token()
+    if token:
+        return token
+
+    header_token = (request.headers.get("X-Watchnest-Token") or "").strip()
+    if header_token:
+        return header_token
+
+    query_token = (request.args.get("token") or "").strip()
+    if query_token:
+        return query_token
+
+    if isinstance(payload, dict):
+        for key in ("token", "apiToken", "watchnestToken"):
+            candidate = (payload.get(key) or "").strip()
+            if candidate:
+                return candidate
+
+    form_token = (request.form.get("token") or request.form.get("apiToken") or request.form.get("watchnestToken") or "").strip()
+    return form_token
+
+
+def ingest_payload_for_owner(owner, payload):
+    state = load_state_for_user(owner["user_id"], owner["display_name"])
+    result = apply_observation_to_state(state, payload)
+    save_state_for_user(owner["user_id"], state)
+    mark_token_used(owner["id"])
+    return result, state
+
+
 def apply_observation_to_state(state, observation):
     title_name = (observation.get("title") or "").strip()
     if not title_name:
         raise ValueError("Observation must include a title.")
 
     platform_id = observation.get("platformId") or "netflix"
-    kind = observation.get("kind") or "show"
+    kind = "movie" if observation.get("kind") == "movie" else "show"
     current_unit = observation.get("currentUnit") or ("S1 E1" if kind == "show" else "Movie")
-    duration_min = int(observation.get("durationMin") or (44 if kind == "show" else 96))
-    progress_delta = int(observation.get("progressDelta") or (16 if kind == "show" else 22))
+    duration_min = parse_duration_minutes(kind, observation)
+    progress_delta = clamp(parse_int(observation.get("progressDelta"), 16 if kind == "show" else 22), 1, 100)
+    progress_percent = parse_progress_percent(observation)
+    event_type = normalize_event_type(observation.get("eventType"))
 
     titles = state.setdefault("titles", [])
     sessions = state.setdefault("sessions", [])
@@ -975,29 +1124,46 @@ def apply_observation_to_state(state, observation):
             "platformId": platform_id,
             "status": "watching",
             "progress": 0,
-            "genres": observation.get("genres") or [],
+            "genres": coerce_list(observation.get("genres")),
             "currentUnit": current_unit,
             "summary": observation.get("summary") or "Added from browser companion capture.",
             "lastActivityAt": utc_now(),
             "favorite": False,
             "source": observation.get("source") or "companion",
+            "externalUrl": observation.get("externalUrl") or "",
         }
         titles.insert(0, target)
 
-    progress_before = max(0, min(100, int(target.get("progress") or 0)))
-    progress_after = max(progress_before, min(100, progress_before + progress_delta))
+    existing_progress = clamp(parse_int(target.get("progress"), 0), 0, 100)
+    previous_unit = target.get("currentUnit") or current_unit
+    unit_changed = kind == "show" and normalize_unit_key(previous_unit) != normalize_unit_key(current_unit)
+    progress_before = 0 if unit_changed else existing_progress
+
+    if progress_percent is not None:
+        if event_type == "ended" or progress_percent >= 98:
+            progress_after = 100
+        elif unit_changed:
+            progress_after = progress_percent
+        else:
+            progress_after = max(existing_progress, progress_percent)
+    else:
+        progress_after = max(progress_before, min(100, progress_before + progress_delta))
+
     started_at = utc_now()
     target["progress"] = progress_after
     target["status"] = "completed" if progress_after >= 100 else "watching"
     target["lastActivityAt"] = started_at
     target["platformId"] = platform_id
     target["kind"] = kind
-    target["currentUnit"] = observation.get("currentUnit") or target.get("currentUnit") or current_unit
+    target["currentUnit"] = current_unit
     target["summary"] = observation.get("summary") or target.get("summary") or "Tracked in Watchnest."
+    target["source"] = observation.get("source") or target.get("source") or "companion"
     if observation.get("year"):
         target["year"] = observation["year"]
     if observation.get("genres"):
-        target["genres"] = observation["genres"]
+        target["genres"] = coerce_list(observation["genres"])
+    if observation.get("externalUrl"):
+        target["externalUrl"] = observation["externalUrl"]
 
     session_entry = {
         "id": create_id("session"),
@@ -1007,13 +1173,19 @@ def apply_observation_to_state(state, observation):
         "durationMin": duration_min,
         "progressBefore": progress_before,
         "progressAfter": progress_after,
-        "sourceType": "auto",
+        "sourceType": observation.get("sourceType") or "auto",
         "sourceLabel": observation.get("sourceLabel") or "Browser companion",
         "device": observation.get("device") or "Browser extension",
+        "eventType": event_type,
+        "currentUnit": current_unit,
         "summary": observation.get("sessionSummary")
         or f"Browser companion captured {target['title']} from {platform_id}.",
     }
-    sessions.insert(0, session_entry)
+    stored_session = merge_or_insert_session(sessions, session_entry)
+    sessions.sort(
+        key=lambda item: parse_iso_timestamp(item.get("startedAt")) or datetime.fromtimestamp(0, tz=timezone.utc),
+        reverse=True,
+    )
     state["sessions"] = sessions[:80]
 
     for connector in connectors:
@@ -1024,7 +1196,154 @@ def apply_observation_to_state(state, observation):
             connector["lastSeenAt"] = started_at
             break
 
-    return {"title": target, "session": session_entry}
+    return {"title": target, "session": stored_session}
+
+
+def parse_json_object(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def parse_secondsish(value):
+    numeric = parse_int(value, 0)
+    if numeric <= 0:
+        return 0
+    if numeric >= 10000:
+        return round(numeric / 1000)
+    return numeric
+
+
+def compute_progress_percent(position_value, duration_value):
+    duration_seconds = parse_secondsish(duration_value)
+    position_seconds = parse_secondsish(position_value)
+    if duration_seconds <= 0 or position_seconds < 0:
+        return None
+    return clamp(int(round((position_seconds / duration_seconds) * 100)), 0, 100)
+
+
+def build_plex_observation(payload):
+    event_type = normalize_event_type(payload.get("event"))
+    if event_type not in {"play", "resume", "pause", "stop", "ended", "progress"}:
+        return None
+
+    metadata = payload.get("Metadata") or {}
+    media_type = (metadata.get("type") or "").strip().lower()
+    if media_type not in {"movie", "episode"}:
+        return None
+
+    kind = "show" if media_type == "episode" else "movie"
+    title_name = (metadata.get("grandparentTitle") if kind == "show" else metadata.get("title") or "").strip()
+    if not title_name:
+        return None
+
+    current_unit = (
+        (format_episode_label(metadata.get("parentIndex"), metadata.get("index")) or metadata.get("title") or "Episode")
+        if kind == "show"
+        else "Movie"
+    )
+    player = payload.get("Player") or {}
+    account = payload.get("Account") or {}
+    server_info = payload.get("Server") or {}
+    device = " / ".join(
+        part
+        for part in [player.get("title"), player.get("product"), player.get("platform")]
+        if part
+    ) or "Plex"
+    progress_percent = compute_progress_percent(metadata.get("viewOffset"), metadata.get("duration"))
+    if event_type == "ended":
+        progress_percent = 100
+
+    account_title = account.get("title") or ""
+
+    return {
+        "title": title_name,
+        "kind": kind,
+        "platformId": "plex",
+        "currentUnit": current_unit,
+        "durationSeconds": parse_secondsish(metadata.get("duration")),
+        "progressPercent": progress_percent,
+        "eventType": event_type,
+        "summary": f"Synced from Plex webhook on {server_info.get('title') or 'your Plex server'}.",
+        "sessionSummary": (
+            f"Plex webhook captured {event_type} for {title_name}"
+            f"{f' {current_unit}' if kind == 'show' else ''}"
+            f"{f' via {device}' if device else ''}"
+            f"{f' for {account_title}' if account_title else ''}."
+        ),
+        "device": device,
+        "source": "plex-webhook",
+        "sourceLabel": "Plex webhook",
+    }
+
+
+def build_tautulli_observation(payload):
+    event_type = normalize_event_type(payload.get("event") or payload.get("action"))
+    if event_type not in {"play", "resume", "pause", "stop", "ended", "progress"}:
+        return None
+
+    media_type = (payload.get("media_type") or payload.get("mediaType") or "").strip().lower()
+    if media_type not in {"movie", "episode"}:
+        media_type = "episode" if any(payload.get(key) for key in ("grandparent_title", "show_name", "series_title")) else "movie"
+
+    kind = "show" if media_type == "episode" else "movie"
+    title_name = (
+        payload.get("grandparent_title")
+        or payload.get("show_name")
+        or payload.get("series_title")
+        or payload.get("title")
+        or payload.get("full_title")
+        or ""
+    ).strip()
+    if not title_name:
+        return None
+
+    current_unit = (
+        (
+            format_episode_label(payload.get("season_num") or payload.get("parent_media_index"), payload.get("episode_num") or payload.get("media_index"))
+            or payload.get("episode_title")
+            or "Episode"
+        )
+        if kind == "show"
+        else "Movie"
+    )
+    duration_value = payload.get("duration") or payload.get("stream_duration")
+    progress_percent = parse_progress_percent({"progressPercent": payload.get("progress_percent") or payload.get("progressPercent")})
+    if progress_percent is None:
+        progress_percent = compute_progress_percent(payload.get("view_offset") or payload.get("viewOffset"), duration_value)
+    if event_type == "ended":
+        progress_percent = 100
+
+    player = payload.get("player") or payload.get("player_title") or ""
+    platform = payload.get("platform") or ""
+    device = " / ".join(part for part in [player, platform] if part) or "Tautulli"
+    user_label = payload.get("friendly_name") or payload.get("user") or ""
+
+    return {
+        "title": title_name,
+        "kind": kind,
+        "platformId": "plex",
+        "currentUnit": current_unit,
+        "durationSeconds": parse_secondsish(duration_value),
+        "progressPercent": progress_percent,
+        "eventType": event_type,
+        "summary": "Synced from Tautulli playback automation.",
+        "sessionSummary": (
+            f"Tautulli captured {event_type} for {title_name}"
+            f"{f' {current_unit}' if kind == 'show' else ''}"
+            f"{f' via {device}' if device else ''}"
+            f"{f' for {user_label}' if user_label else ''}."
+        ),
+        "device": device,
+        "source": "tautulli",
+        "sourceLabel": "Tautulli",
+    }
 
 
 def fetch_tvmaze_results(query):
@@ -1150,7 +1469,7 @@ def get_bearer_token():
     auth_header = request.headers.get("Authorization", "")
     if auth_header.lower().startswith("bearer "):
         return auth_header[7:].strip()
-    return request.headers.get("X-LumaTrack-Token", "").strip()
+    return (request.headers.get("X-Watchnest-Token") or request.headers.get("X-LumaTrack-Token") or "").strip()
 
 
 @app.before_request
@@ -1164,6 +1483,8 @@ def enforce_request_security():
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         exempt_paths = {
             "/api/ingest/observation",
+            "/api/integrations/plex/webhook",
+            "/api/integrations/tautulli/webhook",
             "/auth/callback/google",
             "/auth/callback/facebook",
             "/auth/callback/apple",
@@ -1176,7 +1497,7 @@ def enforce_request_security():
 def apply_headers(response):
     if request.path.startswith("/api/ingest/"):
         response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-LumaTrack-Token"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Watchnest-Token, X-LumaTrack-Token"
         response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
     response.headers["Content-Security-Policy"] = security_csp()
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -1490,14 +1811,75 @@ def api_ingest_observation():
         return jsonify({"error": "Invalid ingest token."}), 401
 
     payload = request.get_json(silent=True) or {}
-    state = load_state_for_user(owner["user_id"], owner["display_name"])
     try:
-        result = apply_observation_to_state(state, payload)
+        result, state = ingest_payload_for_owner(owner, payload)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
-    save_state_for_user(owner["user_id"], state)
-    mark_token_used(owner["id"])
+    return jsonify({"ok": True, "result": result, "state": state})
+
+
+@app.route("/api/integrations/plex/webhook", methods=["POST"])
+def api_plex_webhook():
+    limited = enforce_rate_limit("plex-webhook", 240, 60)
+    if limited:
+        return limited
+
+    payload = parse_json_object(request.form.get("payload"))
+    if not payload:
+        payload = request.get_json(silent=True) or {}
+
+    raw_token = get_request_token(payload)
+    if not raw_token:
+        return jsonify({"error": "Missing ingest token."}), 401
+
+    owner = get_token_owner(raw_token)
+    if not owner:
+        return jsonify({"error": "Invalid ingest token."}), 401
+
+    observation = build_plex_observation(payload)
+    if not observation:
+        return jsonify({"ok": True, "ignored": True, "reason": "Unsupported Plex event."})
+
+    try:
+        result, state = ingest_payload_for_owner(owner, observation)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    return jsonify({"ok": True, "result": result, "state": state})
+
+
+@app.route("/api/integrations/tautulli/webhook", methods=["POST"])
+def api_tautulli_webhook():
+    limited = enforce_rate_limit("tautulli-webhook", 240, 60)
+    if limited:
+        return limited
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = request.form.to_dict(flat=True)
+
+    nested_payload = parse_json_object(payload.get("payload")) or parse_json_object(payload.get("data"))
+    if nested_payload:
+        payload = {**payload, **nested_payload}
+
+    raw_token = get_request_token(payload)
+    if not raw_token:
+        return jsonify({"error": "Missing ingest token."}), 401
+
+    owner = get_token_owner(raw_token)
+    if not owner:
+        return jsonify({"error": "Invalid ingest token."}), 401
+
+    observation = build_tautulli_observation(payload)
+    if not observation:
+        return jsonify({"ok": True, "ignored": True, "reason": "Unsupported Tautulli event."})
+
+    try:
+        result, state = ingest_payload_for_owner(owner, observation)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
     return jsonify({"ok": True, "result": result, "state": state})
 
 

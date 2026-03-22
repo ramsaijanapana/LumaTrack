@@ -53,7 +53,7 @@ const ui = {
   metadataError: "",
   metadataResults: [],
   editor: createEmptyEditor(),
-  tokenLabel: "Browser companion",
+  tokenLabel: "Auto capture",
   tokenBusy: false,
   tokenError: "",
   lastCreatedToken: "",
@@ -495,9 +495,9 @@ async function createCompanionToken() {
     ui.tokenBusy = false;
     ui.lastCreatedToken = response.token;
     ui.lastCreatedPreview = response.created?.preview || "";
-    ui.tokenLabel = "Browser companion";
+    ui.tokenLabel = "Auto capture";
     render();
-    showToast("Companion token created.");
+    showToast("Ingest token created.");
   } catch (error) {
     ui.tokenBusy = false;
     ui.tokenError = error.message || "Token action failed.";
@@ -674,7 +674,7 @@ function render() {
             <h1 class="brand-title">Watchnest</h1>
           </div>
         </div>
-        <p class="brand-copy">Cloud-backed watch tracking with metadata search, companion tokens, and optional linked file sync.</p>
+        <p class="brand-copy">Cloud-backed watch tracking with metadata search, browser auto-capture, Plex/Tautulli ingest, and optional linked file sync.</p>
       </div>
       <div class="status-strip">
         <span class="status-pill"><strong>${escapeHtml(auth.user.displayName)}</strong> signed in</span>
@@ -687,7 +687,7 @@ function render() {
     <section class="hero-grid">
       <article class="hero-card">
         <span class="eyebrow">Useful today</span>
-        <h2 class="hero-title">Search real metadata, manage your queue, and pair a browser companion.</h2>
+        <h2 class="hero-title">Search real metadata, manage your queue, and connect real playback capture.</h2>
         <p class="hero-copy">
           Local accounts work immediately. Google, Facebook, and Apple sign-in hooks are wired in and become active as soon as their OAuth credentials are configured on the server.
           The library below now saves to your signed-in account instead of living only inside one browser tab.
@@ -695,7 +695,7 @@ function render() {
         <div class="hero-actions">
           <button class="button" data-action="panel" data-value="search">Find titles</button>
           <button class="button secondary" data-action="editor-blank">Add manually</button>
-          <button class="button ghost" data-action="create-token">Create companion token</button>
+          <button class="button ghost" data-action="create-token">Create ingest token</button>
           <button class="button ghost" data-action="export-snapshot">Export snapshot</button>
         </div>
         <div class="panel-note">
@@ -786,7 +786,7 @@ function render() {
           <div class="panel-head">
             <div>
               <h2>OTT connectors</h2>
-              <p>These adapters can receive companion events, imports, and manual updates into one timeline.</p>
+              <p>These adapters receive browser auto-capture, Plex/Tautulli events, and manual updates into one timeline.</p>
             </div>
           </div>
           <div class="connector-grid">
@@ -798,7 +798,7 @@ function render() {
           <div class="panel-head">
             <div>
               <h2>Recent activity</h2>
-              <p>Every session rolls into one account timeline, whether it came from manual updates or the companion API.</p>
+              <p>Every session rolls into one account timeline, whether it came from auto-capture, webhooks, or manual updates.</p>
             </div>
           </div>
           <div class="timeline-list">
@@ -826,8 +826,8 @@ function render() {
       <section class="panel">
         <div class="panel-head">
           <div>
-            <h2>Companion tokens</h2>
-            <p>Create an ingest token for the browser companion or any local helper that posts watch observations.</p>
+            <h2>Ingest tokens</h2>
+            <p>Create a token for browser auto-capture, Plex webhooks, Tautulli, or any local helper that posts watch observations.</p>
           </div>
         </div>
         ${renderTokensPanel()}
@@ -1006,7 +1006,7 @@ function renderTokensPanel() {
         <label class="form-field">
           <span>New token label</span>
           <div class="panel-actions">
-            <input class="search-bar" data-token-input="label" type="text" value="${escapeAttribute(ui.tokenLabel)}" placeholder="Browser companion">
+            <input class="search-bar" data-token-input="label" type="text" value="${escapeAttribute(ui.tokenLabel)}" placeholder="Auto capture">
             <button class="button" type="submit" ${ui.tokenBusy ? "disabled" : ""}>${ui.tokenBusy ? "Creating..." : "Create token"}</button>
           </div>
         </label>
@@ -1017,7 +1017,7 @@ function renderTokensPanel() {
           <div class="storage-row">
             <div>
               <h3>Copy this token now</h3>
-              <p>This value is only shown once. Paste it into the companion extension settings.</p>
+              <p>This value is only shown once. Paste it into the browser extension or use it in Plex/Tautulli setup.</p>
             </div>
             <button class="chip-button" data-action="clear-token-reveal">Hide</button>
           </div>
@@ -1025,9 +1025,11 @@ function renderTokensPanel() {
         </div>
       ` : ""}
       <div class="storage-card">
-        <h3>Companion endpoint</h3>
+        <h3>Ingest endpoints</h3>
         <p>POST observations to <span class="code-chip">${escapeHtml(`${appConfig.baseUrl}/api/ingest/observation`)}</span></p>
-        <p class="support-copy">Send a bearer token plus title, platform id, optional current unit, progress delta, duration, and device label.</p>
+        <p>Plex webhook: <span class="code-chip">${escapeHtml(`${appConfig.baseUrl}/api/integrations/plex/webhook?token=YOUR_TOKEN`)}</span></p>
+        <p>Tautulli webhook: <span class="code-chip">${escapeHtml(`${appConfig.baseUrl}/api/integrations/tautulli/webhook?token=YOUR_TOKEN`)}</span></p>
+        <p class="support-copy">The browser extension posts bearer-token observations automatically. Plex and Tautulli can post directly to their own webhook routes with the same token.</p>
       </div>
       <div class="storage-list">
         ${tokens.length ? tokens.map((token) => `
@@ -1040,7 +1042,7 @@ function renderTokensPanel() {
               <button class="chip-button" data-action="delete-token" data-token-id="${token.id}">Delete</button>
             </div>
           </article>
-        `).join("") : renderEmptyState("No companion tokens yet.", "Create one token and use it from the browser extension or any local helper.")}
+        `).join("") : renderEmptyState("No ingest tokens yet.", "Create one token and use it from the browser extension, Plex, Tautulli, or any local helper.")}
       </div>
     </div>
   `;

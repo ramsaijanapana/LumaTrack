@@ -10,7 +10,7 @@
   <main class="shell">
     <header class="hero">
       <h1>Watchnest Companion</h1>
-      <p>Capture the current OTT tab and send it into your library.</p>
+      <p>Auto-capture supported playback. Use manual fallback only when needed.</p>
     </header>
 
     <form id="settings-form" class="panel">
@@ -21,10 +21,32 @@
       </label>
       <label>
         <span>Companion token</span>
-        <textarea id="token" rows="3" placeholder="Paste the token created in Watchnest" required></textarea>
+        <textarea id="token" rows="3" placeholder="Paste a Watchnest token" required></textarea>
       </label>
+      <label class="toggle-row">
+        <input id="auto-capture-enabled" type="checkbox" checked>
+        <span>Enable auto-capture on supported services</span>
+      </label>
+      <p class="hint">The extension requests access only to your Watchnest origin so it can post playback updates.</p>
       <button type="submit">Save connection</button>
     </form>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Auto-capture</h2>
+        <button id="refresh-status" type="button" class="ghost">Refresh</button>
+      </div>
+      <div id="auto-status" class="summary">Checking companion status...</div>
+      <div id="last-delivery" class="summary muted">No auto-capture sent yet.</div>
+      <div class="chip-row">
+        <span>Netflix</span>
+        <span>Prime</span>
+        <span>Disney+</span>
+        <span>Max</span>
+        <span>Apple TV+</span>
+        <span>Plex</span>
+      </div>
+    </section>
 
     <section class="panel">
       <div class="panel-head">
@@ -35,7 +57,7 @@
     </section>
 
     <form id="capture-form" class="panel">
-      <h2>Observation</h2>
+      <h2>Manual fallback</h2>
       <label>
         <span>Title</span>
         <input id="title" type="text" required>
@@ -84,7 +106,7 @@
         <span>Summary</span>
         <textarea id="summary" rows="3" placeholder="Optional note to save with the title"></textarea>
       </label>
-      <button type="submit">Send observation</button>
+      <button type="submit">Send manually</button>
     </form>
 
     <div id="status" class="status"></div>
