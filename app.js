@@ -652,7 +652,7 @@ async function persistAndRender({ saveRemote = false, syncLinked = false, toast 
 
 function render() {
   if (!auth.authenticated) {
-    document.title = "LumaTrack | Sign in";
+    document.title = "LumaTrack | Your watch home";
     appElement.innerHTML = renderAuthView();
     return;
   }
@@ -839,31 +839,48 @@ function render() {
 
 function renderAuthView() {
   const availableProviders = auth.providers.filter((provider) => provider.configured);
-  const inactiveProviders = auth.providers.filter((provider) => !provider.configured);
-  const setupCards = inactiveProviders.map((provider) => renderProviderSetupCard(provider)).join("");
+  const providerButtons = availableProviders.length
+    ? `
+        <div class="support-copy">Or continue with</div>
+        <div class="provider-grid">
+          ${availableProviders.map((provider) => `<a class="button secondary provider-button" href="${provider.loginUrl}">Continue with ${escapeHtml(provider.label)}</a>`).join("")}
+        </div>
+      `
+    : `<p class="auth-subcopy">Email sign-in is available now. More sign-in options can be added as LumaTrack expands.</p>`;
 
   return `
     <section class="hero-grid auth-grid">
-      <article class="hero-card">
-        <span class="eyebrow">Real account layer</span>
-        <h1 class="hero-title">LumaTrack now supports real user accounts.</h1>
+      <article class="hero-card auth-hero">
+        <span class="eyebrow">Personal watch home</span>
+        <h1 class="hero-title">One place for everything you watch.</h1>
         <p class="hero-copy">
-          Sign in with a local account right away. Google, Facebook, and Apple sign-in routes are already wired into the backend and appear here automatically once their OAuth credentials are configured in <code>.env</code> or the server environment.
+          LumaTrack keeps your movies, shows, progress, and next picks together in one calm space, so picking up tonight's watch feels effortless instead of scattered.
         </p>
-        <div class="support-list">
-          ${renderSupportCard("Accounts", "Server-backed state", "Your titles, sessions, and companion tokens live in SQLite instead of one browser tab.")}
-          ${renderSupportCard("Metadata", "Live search", "Shows come from TVMaze and movies come from Wikidata-backed search results.")}
-          ${renderSupportCard("Companion", "Token-based ingest", "A browser helper can send playback observations into your account through a secure token.")}
-          ${renderSupportCard("Portability", "Optional file sync", "You can still export snapshots or link a local JSON file when needed.")}
+        <div class="auth-platform-strip">
+          <span>Netflix</span>
+          <span>Prime Video</span>
+          <span>Disney+</span>
+          <span>Max</span>
+          <span>Apple TV+</span>
+          <span>Plex</span>
         </div>
-        ${setupCards ? `<div class="support-copy">Provider setup</div><div class="support-list">${setupCards}</div>` : ""}
+        <div class="auth-feature-grid">
+          ${renderSupportCard("Remember", "Pick up instantly", "See what you started, what you finished, and what you meant to come back to without hunting across apps.")}
+          ${renderSupportCard("Organize", "Build your own watch rhythm", "Keep a personal library for comfort rewatches, new releases, and the shows you are saving for later.")}
+          ${renderSupportCard("Sync", "Stay in step across devices", "Your library travels with you, whether you check in from your laptop, desktop, or a shared home setup.")}
+          ${renderSupportCard("Simple", "Designed to stay out of the way", "Flat, fast, and clean by default, with just enough detail to feel useful every time you open it.")}
+        </div>
+        <div class="auth-quote">
+          <strong>Your watchlist should feel personal, not procedural.</strong>
+          <span>That is the idea behind LumaTrack: one clear home for the stories you are in the middle of.</span>
+        </div>
       </article>
 
       <aside class="hero-card auth-card">
         <div class="panel-head">
           <div>
-            <h2>${ui.authMode === "login" ? "Sign in" : "Create account"}</h2>
-            <p>${ui.authMode === "login" ? "Use your email and password or a configured provider." : "Create a local account now, or use a configured provider."}</p>
+            <h2>${ui.authMode === "login" ? "Welcome back" : "Create your space"}</h2>
+            <p>${ui.authMode === "login" ? "Sign in to continue your library, progress, and saved picks." : "Start your own private watch hub in under a minute."}</p>
           </div>
         </div>
         <div class="filter-row">
@@ -872,34 +889,14 @@ function renderAuthView() {
         </div>
         ${ui.authMode === "login" ? renderLoginForm() : renderRegisterForm()}
         ${ui.authError ? `<div class="panel-note">${escapeHtml(ui.authError)}</div>` : ""}
-        <div class="support-copy">Configured providers</div>
-        <div class="provider-grid">
-          ${availableProviders.length ? availableProviders.map((provider) => `<a class="button secondary provider-button" href="${provider.loginUrl}">Continue with ${escapeHtml(provider.label)}</a>`).join("") : `<div class="empty-state"><h3>No provider logins are active yet.</h3><p>Add provider credentials in <code>.env</code> or the server environment to enable Google, Facebook, or Apple sign-in.</p></div>`}
+        ${providerButtons}
+        <div class="auth-trust-list">
+          <div class="auth-trust-item">Private account and synced watch history</div>
+          <div class="auth-trust-item">Fast title search across shows and movies</div>
+          <div class="auth-trust-item">A cleaner way to decide what to watch next</div>
         </div>
-        ${inactiveProviders.length ? `<div class="panel-note">${inactiveProviders.map((provider) => provider.label).join(", ")} login hooks are present in code but need OAuth credentials before they can be used.</div>` : ""}
       </aside>
     </section>
-  `;
-}
-
-function renderProviderSetupCard(provider) {
-  const missingEnv = Array.isArray(provider.missingEnv) ? provider.missingEnv : [];
-  const requiredEnv = Array.isArray(provider.requiredEnv) ? provider.requiredEnv : [];
-  const requirementLine = missingEnv.length
-    ? `Missing: ${missingEnv.join(", ")}`
-    : requiredEnv.length
-      ? `Required: ${requiredEnv.join(", ")}`
-      : "Check provider configuration.";
-  const errorLine = provider.error ? `<div class="panel-note">${escapeHtml(provider.error)}</div>` : "";
-
-  return `
-    <article class="support-card">
-      <div class="support-label">${escapeHtml(provider.label)}</div>
-      <h3>Callback URL</h3>
-      <p><code>${escapeHtml(provider.callbackUrl || "")}</code></p>
-      <p>${escapeHtml(requirementLine)}</p>
-      ${errorLine}
-    </article>
   `;
 }
 
