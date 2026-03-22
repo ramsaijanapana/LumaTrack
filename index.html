@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f4efe5">
+  <meta name="description" content="LumaTrack is a server-backed movies and shows tracker with real accounts, metadata search, and a browser companion flow.">
+  <title>LumaTrack | Account-Backed Watch Tracker</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon-maskable.svg">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell"></div>
+  <input id="snapshot-input" type="file" accept="application/json" hidden>
+  <div id="toast-region" class="toast-region" aria-live="assertive" aria-atomic="true"></div>
+  <noscript>
+    <section class="no-script">
+      <h1>LumaTrack needs JavaScript enabled.</h1>
+      <p>This app runs locally in the browser, but storage, syncing, and connector events need JavaScript.</p>
+    </section>
+  </noscript>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "LumaTrack",
+  "short_name": "LumaTrack",
+  "description": "Account-backed watch tracker with metadata search, companion ingest, and optional linked file sync.",
+  "display": "standalone",
+  "start_url": "./",
+  "scope": "./",
+  "background_color": "#f4efe5",
+  "theme_color": "#f4efe5",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

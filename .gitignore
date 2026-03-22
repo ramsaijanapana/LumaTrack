@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.lumatrack.secret
+lumatrack.db
+server.err.log
+server.out.log
