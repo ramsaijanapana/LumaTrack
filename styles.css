@@ -1236,6 +1236,34 @@ select:focus-visible {
   gap: 1rem;
 }
 
+.tracking-grid {
+  margin-bottom: 1rem;
+}
+
+.reward-rack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.reward-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  padding: 0.38rem 0.72rem;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.reward-badge.muted {
+  background: rgba(56, 48, 40, 0.08);
+  color: var(--ink-soft);
+}
+
 .search-tab-shell {
   min-height: 28rem;
 }
@@ -1243,6 +1271,10 @@ select:focus-visible {
 .search-workspace {
   display: grid;
   gap: 1rem;
+}
+
+.action-nav {
+  margin-top: -0.2rem;
 }
 
 .search-workspace.compact [data-search-panel="metadata"] .search-results {
@@ -1300,6 +1332,7 @@ select:focus-visible {
   min-height: 9.6rem;
   padding: 0.78rem;
   border-radius: 0;
+  justify-content: flex-start;
 }
 
 .title-card.compact .poster-title {
@@ -1309,13 +1342,24 @@ select:focus-visible {
 
 .title-card.compact .poster-copy {
   margin-top: 0.32rem;
-  font-size: 0.76rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   max-width: 9ch;
 }
 
 .title-card.compact .card-body {
   padding: 0.78rem 0.9rem;
   gap: 0.58rem;
+}
+
+.title-card.compact .card-top h3 {
+  font-size: 1rem;
+}
+
+.title-card.compact .card-top p {
+  font-size: 0.92rem;
 }
 
 .title-card.compact .card-actions .chip-button,
@@ -1337,6 +1381,12 @@ select:focus-visible {
 
 .watch-line.soft {
   color: var(--ink-soft);
+}
+
+.compact-action {
+  min-height: 1.95rem;
+  padding: 0.35rem 0.68rem;
+  font-size: 0.82rem;
 }
 
 .result-card {

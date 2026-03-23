@@ -1616,6 +1616,7 @@ def fetch_tvmaze_results(query):
                 "kind": "show",
                 "title": show.get("name"),
                 "year": parse_year(show.get("premiered")),
+                "runtimeMin": parse_int(show.get("averageRuntime") or show.get("runtime"), 0),
                 "summary": strip_html(show.get("summary")),
                 "genres": show.get("genres") or [],
                 "image": proxied_image_url((show.get("image") or {}).get("original") or (show.get("image") or {}).get("medium")),
@@ -1693,6 +1694,7 @@ def fetch_movie_results(query):
                 "kind": "movie",
                 "title": item.get("label"),
                 "year": parse_year(claim_time(entity, "P577")),
+                "runtimeMin": 0,
                 "summary": item.get("description") or entity_description(entity) or "Film metadata from Wikidata.",
                 "genres": [],
                 "image": proxied_image_url(f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(image_name)}") if image_name else None,
@@ -1756,6 +1758,7 @@ def fetch_tvmaze_episode_options(source_id):
         "image": proxied_image_url((payload.get("image") or {}).get("original") or (payload.get("image") or {}).get("medium")),
         "externalUrl": payload.get("url") or "",
         "imdbId": str(((payload.get("externals") or {}).get("imdb") or "")).strip(),
+        "runtimeMin": parse_int(payload.get("averageRuntime") or payload.get("runtime"), 0),
         "ratings": [{"source": "TVMaze", "value": f"{((payload.get('rating') or {}).get('average'))}/10"}] if ((payload.get("rating") or {}).get("average")) not in {None, ""} else [],
     }
 

@@ -194,6 +194,7 @@ async function handleClick(event) {
         break;
       case "editor-blank":
         ui.editor = createEmptyEditor();
+        ui.activeTab = "watchlist";
         ui.selectedPanel = "editor";
         render();
         scrollToPrimaryTools();
@@ -209,7 +210,9 @@ async function handleClick(event) {
         break;
       case "editor-edit":
         loadEditorFromTitle(titleId);
+        ui.activeTab = "watchlist";
         render();
+        scrollToPrimaryTools();
         break;
       case "editor-delete":
         await deleteTitle(titleId);
@@ -219,6 +222,7 @@ async function handleClick(event) {
         break;
       case "title-log-session":
         loadSessionDraftFromTitle(titleId);
+        ui.activeTab = "watchlist";
         render();
         scrollToPrimaryTools();
         break;
@@ -227,7 +231,7 @@ async function handleClick(event) {
         break;
       case "title-choose-unit":
         loadSessionDraftFromTitle(titleId);
-        ui.activeTab = "search";
+        ui.activeTab = "watchlist";
         ui.selectedPanel = "history";
         render();
         scrollToPrimaryTools();
@@ -243,6 +247,7 @@ async function handleClick(event) {
         break;
       case "select-result":
         loadEditorFromMetadata(resultId);
+        ui.activeTab = "watchlist";
         render();
         scrollToPrimaryTools();
         break;
@@ -335,6 +340,11 @@ function handleChange(event) {
   if (event.target.matches("[data-editor-field]")) {
     const field = event.target.dataset.editorField;
     ui.editor[field] = event.target.value;
+    if (field === "platformId") {
+      ui.editor.serviceLabel = event.target.value === "all"
+        ? (ui.editor.serviceLabel || "")
+        : (getConnectorDefinition(event.target.value)?.name || ui.editor.serviceLabel || "");
+    }
     if (field === "kind") {
       ui.editor.currentUnit = event.target.value === "movie" ? "Movie" : (ui.editor.currentUnit || "S1 E1");
       render({ domState: captureDomState(event.target) });
@@ -590,6 +600,9 @@ async function ensureEpisodeOptions(sourceId) {
       if (!title.summary && show.summary) {
         title.summary = show.summary;
       }
+      if (!title.runtimeMin && show.runtimeMin) {
+        title.runtimeMin = show.runtimeMin;
+      }
     }
   } catch (_error) {
     episodeOptionsCache.set(sourceId, []);
@@ -605,7 +618,7 @@ async function quickAddMetadataResult(resultId) {
     throw new Error("That search result is no longer available.");
   }
 
-  const platformId = inferPlatformId(result.platformHint) || ui.editor.platformId || "netflix";
+  const platformId = inferPlatformId(result.platformHint) || (ui.editor.platformId && ui.editor.platformId !== "all" ? ui.editor.platformId : "") || "all";
   const existing = findExistingTitle(result, platformId);
   if (existing) {
     ui.selectedPanel = "editor";
@@ -1034,6 +1047,7 @@ function renderAuthenticatedApp({ filteredTitles, recentSessions, stats, linkedS
       <div class="status-strip">
         <span class="status-pill"><strong>${escapeHtml(auth.user.displayName)}</strong> signed in</span>
         <span class="status-pill"><strong>${stats.totalTitles}</strong> titles</span>
+        <span class="status-pill"><strong>${escapeHtml(formatHours(stats.totalMinutesTracked))}</strong> watched</span>
         <span class="status-pill"><strong>${escapeHtml(formatRelative(state.meta.updatedAt))}</strong> updated</span>
         <div class="theme-switch" aria-label="Theme switcher">
           ${THEME_OPTIONS.map((theme) => `
@@ -1047,18 +1061,15 @@ function renderAuthenticatedApp({ filteredTitles, recentSessions, stats, linkedS
     </header>
 
     <nav class="main-tabs" aria-label="Primary navigation">
-      ${renderMainTabButton("watchlist", "Watchlist")}
-      ${renderMainTabButton("search", "Add & update")}
+      ${renderMainTabButton("watchlist", "Home")}
       ${renderMainTabButton("setup", "Setup")}
     </nav>
 
     ${ui.appError ? `<div class="panel-note app-inline-note">${escapeHtml(ui.appError)}</div>` : ""}
 
-    ${ui.activeTab === "search"
-      ? renderSearchTab(editedTitle)
-      : ui.activeTab === "setup"
-        ? renderSetupTab(linkedStatus, fileSyncAvailable)
-        : renderWatchlistTab(filteredTitles, recentSessions)}
+    ${ui.activeTab === "setup"
+      ? renderSetupTab(linkedStatus, fileSyncAvailable)
+      : renderWatchlistTab(filteredTitles, recentSessions, stats, editedTitle)}
   `;
 }
 
@@ -1066,20 +1077,21 @@ function renderMainTabButton(tabId, label) {
   return `<button class="main-tab ${ui.activeTab === tabId ? "active" : ""}" data-action="nav" data-value="${tabId}">${escapeHtml(label)}</button>`;
 }
 
-function renderWatchlistTab(filteredTitles, recentSessions) {
+function renderWatchlistTab(filteredTitles, recentSessions, stats, editedTitle) {
   const watchStates = filteredTitles.map((title) => ({ title, state: getTitleWatchState(title) }));
   const activeTitles = watchStates.filter((entry) => !entry.state.comingSoon && entry.title.status !== "completed");
   const completedTitles = watchStates.filter((entry) => entry.title.status === "completed" && !entry.state.comingSoon);
   const comingSoonTitles = watchStates.filter((entry) => entry.state.comingSoon);
 
   return `
+    ${renderTrackingOverview(stats)}
     <section class="dashboard-grid">
       <section class="panel section-panel" data-section="library">
         <div class="panel-head">
           <div>
             <span class="eyebrow">Watchlist</span>
             <h2>Keep moving forward.</h2>
-            <p>See what to watch next, what is coming soon, and what you already finished.</p>
+            <p>Poster-first cards, fast updates, and clear next-up guidance.</p>
           </div>
           <div class="panel-actions library-tools-inline">
             <input class="search-bar" data-filter-input="search" type="search" value="${escapeAttribute(state.filters.search)}" placeholder="Filter your library">
@@ -1139,10 +1151,10 @@ function renderWatchlistTab(filteredTitles, recentSessions) {
             <div>
               <span class="eyebrow">Add titles</span>
               <h2>Search on the side.</h2>
-              <p>Add something new or update where you are in one place.</p>
+              <p>Search is always available here. Manual add and watch updates stay one click away.</p>
             </div>
           </div>
-          ${renderSearchWorkspace(ui.editor.mode === "edit" && ui.editor.titleId ? lookupTitle(ui.editor.titleId) : null, true)}
+          ${renderSearchWorkspace(editedTitle, true)}
         </section>
 
         <section class="panel section-panel" data-section="activity">
@@ -1252,16 +1264,17 @@ function renderSetupTab(linkedStatus, fileSyncAvailable) {
 function renderSearchWorkspace(editedTitle, compact = false) {
   return `
     <div class="search-workspace ${compact ? "compact" : ""}">
-      <div class="workspace-tabs">
-        <button class="chip-button ${ui.selectedPanel === "search" ? "primary" : ""}" data-action="panel" data-value="search">Search</button>
+      ${renderSearchPanel()}
+      <div class="workspace-tabs action-nav">
         <button class="chip-button ${ui.selectedPanel === "editor" ? "primary" : ""}" data-action="panel" data-value="editor">Add manually</button>
         <button class="chip-button ${ui.selectedPanel === "history" ? "primary" : ""}" data-action="panel" data-value="history">Mark watched</button>
+        ${ui.selectedPanel !== "search" ? `<button class="chip-button" data-action="panel" data-value="search">Close</button>` : ""}
       </div>
-      ${ui.selectedPanel === "search"
-        ? renderSearchPanel()
-        : ui.selectedPanel === "history"
+      ${ui.selectedPanel === "history"
           ? renderSessionEntryPanel()
-          : renderEditorPanel(editedTitle)}
+          : ui.selectedPanel === "editor"
+            ? renderEditorPanel(editedTitle)
+            : ""}
     </div>
   `;
 }
@@ -1516,6 +1529,10 @@ function renderEditorPanel(editedTitle) {
         <label class="form-field">
           <span>Year</span>
           <input class="search-bar" data-editor-field="year" type="number" min="1888" max="2100" value="${escapeAttribute(String(ui.editor.year || ""))}">
+        </label>
+        <label class="form-field">
+          <span>Runtime (min)</span>
+          <input class="search-bar" data-editor-field="runtimeMin" type="number" min="1" max="600" value="${escapeAttribute(String(ui.editor.runtimeMin || ""))}" placeholder="${ui.editor.kind === "movie" ? "120" : "42"}">
         </label>
         <label class="form-field">
           <span>Platform</span>
@@ -1822,6 +1839,7 @@ function renderMetadataResult(result) {
   const resultImage = proxyImageUrl(result.image);
   const platformId = inferPlatformId(result.platformHint) || ui.editor.platformId || "all";
   const connector = getConnectorDefinition(platformId);
+  const serviceLabel = connector?.shortName || result.platformHint || "Choose later";
   return `
     <article class="result-card">
       <div class="result-media ${resultImage ? "has-image" : ""}" data-platform="${escapeAttribute(platformId)}">
@@ -1839,7 +1857,7 @@ function renderMetadataResult(result) {
         </div>
         <div class="chip-row">
           <span class="tag">${escapeHtml(result.source)}</span>
-          <span class="tag">${escapeHtml(connector?.shortName || platformId)}</span>
+          <span class="tag">${escapeHtml(serviceLabel)}</span>
           ${(result.genres || []).slice(0, 2).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}
         </div>
         ${renderRatingsPanel(result.ratings || [], result.ratingUpdatedAt || null, result.imdbId || "", true)}
@@ -1854,12 +1872,14 @@ function renderMetadataResult(result) {
 
 function renderTitleCard(title) {
   const connector = getConnectorDefinition(title.platformId);
+  const serviceLabel = title.serviceLabel || connector?.name || "Service not set";
   const titleImage = proxyImageUrl(title.image);
   const watchState = getTitleWatchState(title);
+  const yearLabel = title.year ? String(title.year) : "Now";
   const availabilityLabel = watchState.comingSoon
-    ? `Coming ${watchState.nextAirLabel}${connector?.name ? ` on ${connector.name}` : ""}`
+    ? `Coming ${watchState.nextAirLabel}${serviceLabel ? ` on ${serviceLabel}` : ""}`
     : watchState.nextUnit
-      ? `Up next ${watchState.nextUnit}${connector?.name ? ` on ${connector.name}` : ""}`
+      ? `Up next ${watchState.nextUnit}${serviceLabel ? ` on ${serviceLabel}` : ""}`
       : watchState.completed
         ? "All caught up"
         : "Ready to start";
@@ -1872,14 +1892,14 @@ function renderTitleCard(title) {
         <div class="poster-scrim" aria-hidden="true"></div>
         <span class="poster-platform">${escapeHtml(connector?.shortName || title.platformId)}</span>
         <strong class="poster-title">${escapeHtml(title.title)}</strong>
-        <span class="poster-copy">${escapeHtml(watchState.posterCopy)}</span>
+        <span class="poster-copy">${escapeHtml(yearLabel)}</span>
         ${primaryAction ? `<button class="poster-quick-action" type="button" data-action="title-mark-next" data-title-id="${title.id}" ${watchState.quickActionDisabled ? "disabled" : ""}>Done</button>` : ""}
       </div>
       <div class="card-body">
         <div class="card-top">
           <div>
             <h3>${escapeHtml(title.title)}</h3>
-            <p>${escapeHtml(connector?.name || title.platformId)} / ${escapeHtml(String(title.year || ""))}</p>
+            <p>${escapeHtml(serviceLabel)} / ${escapeHtml(yearLabel)}</p>
           </div>
           <div class="chip-row">
             <button class="icon-button" data-action="title-favorite" data-title-id="${title.id}">${title.favorite ? "Pinned" : "Pin"}</button>
@@ -1899,7 +1919,7 @@ function renderTitleCard(title) {
         </div>
         <div class="card-actions">
           ${title.kind === "show" ? `<button class="chip-button" data-action="title-choose-unit" data-title-id="${title.id}">Choose episode</button>` : `<button class="chip-button" data-action="title-choose-unit" data-title-id="${title.id}">Update</button>`}
-          ${title.externalUrl ? `<button class="chip-button" type="button" data-action="open-external" data-url="${escapeAttribute(title.externalUrl)}">Source</button>` : ""}
+          ${title.externalUrl ? `<button class="chip-button" type="button" data-action="open-external" data-url="${escapeAttribute(title.externalUrl)}">Open title</button>` : ""}
         </div>
       </div>
     </article>
@@ -1929,6 +1949,7 @@ function renderConnectorCard(connector) {
 function renderSessionCard(session) {
   const title = lookupTitle(session.titleId);
   const connector = getConnectorDefinition(session.platformId);
+  const watchState = title ? getTitleWatchState(title) : null;
   return `
     <article class="timeline-item">
       <div class="timeline-head">
@@ -1942,6 +1963,11 @@ function renderSessionCard(session) {
       <div class="chip-row">
         <span class="tag">${escapeHtml(session.device)}</span>
         ${session.currentUnit ? `<span class="tag">${escapeHtml(session.currentUnit)}</span>` : ""}
+        ${watchState?.quickActionLabel
+          ? `<button class="chip-button compact-action" data-action="title-mark-next" data-title-id="${title.id}" ${watchState.quickActionDisabled ? "disabled" : ""}>Continue</button>`
+          : title
+            ? `<button class="chip-button compact-action" data-action="title-choose-unit" data-title-id="${title.id}">${title.kind === "show" ? "Choose episode" : "Update"}</button>`
+            : ""}
       </div>
     </article>
   `;
@@ -1970,6 +1996,27 @@ function normalizeUserRating(value) {
 
 function formatUserRating(value) {
   return `${Number(value).toFixed(Number(value) % 1 === 0 ? 0 : 1)}/10`;
+}
+
+function normalizeRuntimeMinutes(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return Math.max(0, Math.round(Number(fallback) || 0));
+  }
+  return Math.max(1, Math.round(numeric));
+}
+
+function formatHours(totalMinutes) {
+  const hours = Math.round((Number(totalMinutes || 0) / 60) * 10) / 10;
+  return `${hours.toFixed(hours % 1 === 0 ? 0 : 1)}h`;
+}
+
+function connectorFriendlyAvailability(title, nextUnit) {
+  const connector = getConnectorDefinition(title?.platformId);
+  const serviceLabel = title?.serviceLabel || connector?.name || "";
+  return serviceLabel
+    ? `${nextUnit} is ready on ${serviceLabel}`
+    : `Start from ${nextUnit}`;
 }
 
 function normalizeEpisodeValue(value) {
@@ -2090,7 +2137,10 @@ function getTitleWatchState(title) {
 
   const nextEpisode = nextIndex >= 0 ? episodeOptions[nextIndex] : null;
   const noMoreEpisodes = episodeOptions.length > 0 && nextIndex >= episodeOptions.length;
-  const completed = title.status === "completed" || (!nextEpisode && episodeOptions.length > 0 && lastCompletedIndex === episodeOptions.length - 1);
+  const completed = !nextEpisode && (
+    title.status === "completed"
+    || (episodeOptions.length > 0 && lastCompletedIndex === episodeOptions.length - 1)
+  );
   const comingSoon = Boolean(nextEpisode && isFutureEpisode(nextEpisode));
   const nextUnit = completed ? "" : (nextEpisode?.value || title.currentUnit || "S1 E1");
   const nextAirLabel = nextEpisode ? formatEpisodeAirLabel(nextEpisode) : "";
@@ -2106,10 +2156,10 @@ function getTitleWatchState(title) {
     posterCopy: completed ? "All caught up" : comingSoon ? `${nextUnit} soon` : nextUnit,
     lastCompletedLabel: title.lastCompletedUnit || "",
     metaCopy: completed
-      ? `Last updated ${formatRelative(title.lastActivityAt)}`
+      ? (comingSoon ? `${nextUnit} lands ${nextAirLabel}` : `Last updated ${formatRelative(title.lastActivityAt)}`)
       : comingSoon
         ? `${nextUnit} lands ${nextAirLabel}`
-        : `Start from ${nextUnit}`,
+        : connectorFriendlyAvailability(title, nextUnit),
     quickActionLabel: completed || comingSoon || !nextUnit ? "" : "Mark watched",
     quickActionDisabled: completed || comingSoon || !nextUnit,
     nextEpisode,
@@ -2153,6 +2203,8 @@ async function markTitleThroughUnit(title, targetUnit, {
     return;
   }
   const progressBefore = Number.isFinite(Number(title.progress)) ? Number(title.progress) : 0;
+  let trackedDurationMin = normalizeRuntimeMinutes(title.runtimeMin, title.kind === "movie" ? 120 : 42);
+  let trackedUnitLabel = targetUnit;
 
   if (title.kind === "movie") {
     title.status = "completed";
@@ -2173,26 +2225,37 @@ async function markTitleThroughUnit(title, targetUnit, {
       title.progress = Math.min(100, Math.max(Number(title.progress) || 0, 12));
       title.lastActivityAt = startedAt;
     } else {
-    const targetIndex = findEpisodeIndex(episodeOptions, targetUnit);
-    if (targetIndex < 0) {
-      throw new Error("That episode could not be found.");
-    }
-
-    const currentIndex = findEpisodeIndex(episodeOptions, title.currentUnit);
-    if (targetIndex > currentIndex && currentIndex >= 0) {
-      const firstPending = episodeOptions[currentIndex]?.value || title.currentUnit;
-      const shouldCatchUp = window.confirm(`Mark ${firstPending} through ${targetUnit} as watched?`);
-      if (!shouldCatchUp) {
-        return;
+      const targetIndex = findEpisodeIndex(episodeOptions, targetUnit);
+      if (targetIndex < 0) {
+        throw new Error("That episode could not be found.");
       }
-    }
 
-    title.lastCompletedUnit = episodeOptions[targetIndex]?.value || targetUnit;
-    const nextEpisode = episodeOptions[targetIndex + 1] || null;
-    title.currentUnit = nextEpisode ? nextEpisode.value : "Completed";
-    title.progress = computeEpisodeProgressFromIndex(targetIndex, episodeOptions.length);
-    title.status = nextEpisode ? "watching" : "completed";
-    title.lastActivityAt = startedAt;
+      const currentIndex = findEpisodeIndex(episodeOptions, title.currentUnit);
+      let rangeStartIndex = targetIndex;
+      if (targetIndex > currentIndex && currentIndex >= 0) {
+        const firstPending = episodeOptions[currentIndex]?.value || title.currentUnit;
+        const shouldCatchUp = window.confirm(`Mark ${firstPending} through ${targetUnit} as watched?`);
+        if (!shouldCatchUp) {
+          return;
+        }
+        rangeStartIndex = currentIndex;
+      }
+
+      const watchedEpisodes = episodeOptions.slice(Math.max(0, rangeStartIndex), targetIndex + 1);
+      trackedDurationMin = watchedEpisodes.reduce(
+        (total, episode) => total + normalizeRuntimeMinutes(episode.runtime, title.runtimeMin || 42),
+        0
+      ) || normalizeRuntimeMinutes(title.runtimeMin, 42);
+      trackedUnitLabel = watchedEpisodes.length > 1
+        ? `${watchedEpisodes[0]?.value || targetUnit} -> ${episodeOptions[targetIndex]?.value || targetUnit}`
+        : episodeOptions[targetIndex]?.value || targetUnit;
+
+      title.lastCompletedUnit = episodeOptions[targetIndex]?.value || targetUnit;
+      const nextEpisode = episodeOptions[targetIndex + 1] || null;
+      title.currentUnit = nextEpisode ? nextEpisode.value : "Completed";
+      title.progress = computeEpisodeProgressFromIndex(targetIndex, episodeOptions.length);
+      title.status = nextEpisode ? "watching" : "completed";
+      title.lastActivityAt = startedAt;
     }
   }
 
@@ -2202,15 +2265,15 @@ async function markTitleThroughUnit(title, targetUnit, {
       titleId: title.id,
       platformId: title.platformId,
       startedAt,
-      durationMin: title.kind === "movie" ? 120 : 42,
+      durationMin: trackedDurationMin,
       progressBefore,
       progressAfter: title.progress,
       sourceType,
       sourceLabel,
       device,
-      currentUnit: targetUnit,
+      currentUnit: trackedUnitLabel,
       eventType: "watched",
-      summary: summary || `${title.title} updated to ${targetUnit}.`
+      summary: summary || `${title.title} updated to ${trackedUnitLabel}.`
     },
     ...state.sessions
   ].slice(0, 60);
@@ -2389,16 +2452,75 @@ function getStats() {
   const completedTitles = state.titles.filter((title) => title.status === "completed").length;
   const sessionsThisWeek = state.sessions.filter((session) => daysBetween(session.startedAt, new Date().toISOString()) <= 7);
   const connectedConnectors = state.connectors.filter((connector) => connector.status === "connected").length;
-  return {
+  const totalMinutesTracked = state.sessions.reduce((total, session) => total + session.durationMin, 0);
+  const totalEpisodesTracked = state.sessions.filter((session) => lookupTitle(session.titleId)?.kind === "show").length;
+  const totalMoviesTracked = state.sessions.filter((session) => lookupTitle(session.titleId)?.kind === "movie").length;
+  const streakDays = computeStreakDays(state.sessions);
+  const stats = {
     totalTitles: state.titles.length,
     watchingTitles,
     completedTitles,
     weeklyMinutes: sessionsThisWeek.reduce((total, session) => total + session.durationMin, 0),
     weeklySessions: sessionsThisWeek.length,
+    totalMinutesTracked,
+    totalEpisodesTracked,
+    totalMoviesTracked,
     connectedConnectors,
     idleConnectors: state.connectors.length - connectedConnectors,
-    streakDays: computeStreakDays(state.sessions)
+    streakDays
   };
+  stats.badges = getRewardBadges(stats);
+  return stats;
+}
+
+function getRewardBadges(stats) {
+  const badges = [];
+  if (stats.totalMinutesTracked >= 120) {
+    badges.push({ id: "starter", label: "Starter", copy: "First 2 hours tracked." });
+  }
+  if (stats.totalEpisodesTracked >= 10) {
+    badges.push({ id: "series-run", label: "Series Run", copy: "10 episodes completed." });
+  }
+  if (stats.totalMoviesTracked >= 5) {
+    badges.push({ id: "movie-night", label: "Movie Night", copy: "5 movies logged." });
+  }
+  if (stats.completedTitles >= 3) {
+    badges.push({ id: "finisher", label: "Finisher", copy: "3 titles fully completed." });
+  }
+  if (stats.totalMinutesTracked >= 1200) {
+    badges.push({ id: "binge", label: "Binge", copy: "20 total hours tracked." });
+  }
+  if (stats.streakDays >= 7) {
+    badges.push({ id: "streak", label: "Streak 7", copy: "Tracked activity 7 days straight." });
+  }
+  return badges;
+}
+
+function renderTrackingOverview(stats) {
+  return `
+    <section class="stats-grid tracking-grid">
+      <article class="panel metric-card">
+        <span class="eyebrow">Tracked time</span>
+        <strong>${escapeHtml(formatHours(stats.totalMinutesTracked))}</strong>
+        <p>${stats.totalEpisodesTracked} episode updates and ${stats.totalMoviesTracked} movie updates logged.</p>
+      </article>
+      <article class="panel metric-card">
+        <span class="eyebrow">This week</span>
+        <strong>${escapeHtml(formatHours(stats.weeklyMinutes))}</strong>
+        <p>${stats.weeklySessions} watch updates in the last 7 days.</p>
+      </article>
+      <article class="panel metric-card">
+        <span class="eyebrow">Rewards</span>
+        <strong>${stats.badges.length}</strong>
+        <p>${stats.badges.length ? "Badges earned from consistent tracking." : "Keep logging to unlock your first badge."}</p>
+        <div class="reward-rack">
+          ${stats.badges.length
+            ? stats.badges.map((badge) => `<span class="reward-badge" title="${escapeAttribute(badge.copy)}">${escapeHtml(badge.label)}</span>`).join("") 
+            : `<span class="reward-badge muted">No badges yet</span>`}
+        </div>
+      </article>
+    </section>
+  `;
 }
 
 function compareTitleOrder(left, right) {
@@ -2448,7 +2570,9 @@ function createEmptyEditor() {
     title: "",
     kind: "show",
     year: "",
+    runtimeMin: "",
     platformId: "netflix",
+    serviceLabel: "",
     status: "queued",
     progress: 0,
     currentUnit: "S1 E1",
@@ -2487,7 +2611,9 @@ function loadEditorFromMetadata(resultId) {
     title: starter.title,
     kind: starter.kind,
     year: starter.year,
+    runtimeMin: starter.runtimeMin || "",
     platformId: starter.platformId,
+    serviceLabel: starter.serviceLabel || result.platformHint || "",
     status: starter.status,
     progress: starter.progress,
     currentUnit: starter.currentUnit,
@@ -2519,7 +2645,9 @@ function loadEditorFromTitle(titleId) {
     title: title.title,
     kind: title.kind,
     year: title.year,
+    runtimeMin: title.runtimeMin || "",
     platformId: title.platformId,
+    serviceLabel: title.serviceLabel || "",
     status: title.status,
     progress: title.progress,
     currentUnit: title.currentUnit,
@@ -2557,7 +2685,9 @@ function buildTitlePayloadFromEditor() {
     title,
     kind,
     year: Number.isFinite(Number(ui.editor.year)) ? Number(ui.editor.year) : new Date().getFullYear(),
+    runtimeMin: normalizeRuntimeMinutes(ui.editor.runtimeMin, 0),
     platformId: ui.editor.platformId || "netflix",
+    serviceLabel: ui.editor.serviceLabel || getConnectorDefinition(ui.editor.platformId)?.name || "",
     status,
     progress: status === "completed" ? 100 : kind === "movie" ? 0 : computeEpisodeProgressFromIndex(Math.max(0, currentIndex - 1), episodeOptions.length),
     genres: ui.editor.genres
@@ -2647,6 +2777,8 @@ function renderPlatformOptions(selectedPlatform, includeAll = true) {
   const options = [];
   if (includeAll) {
     options.push(`<option value="all" ${selectedPlatform === "all" ? "selected" : ""}>All platforms</option>`);
+  } else if (selectedPlatform === "all") {
+    options.push(`<option value="all" selected>Choose later</option>`);
   }
   for (const connector of connectorDefinitions) {
     options.push(
