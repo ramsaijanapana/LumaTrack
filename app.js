@@ -1,8 +1,10 @@
 import {
   createToken,
   deleteToken,
+  fetchEpisodeOptions,
   fetchBootstrap,
   loginAccount,
+  lookupRatings,
   logoutAccount,
   registerAccount,
   saveState,
@@ -24,6 +26,7 @@ import {
 const appElement = document.getElementById("app");
 const snapshotInput = document.getElementById("snapshot-input");
 const toastRegion = document.getElementById("toast-region");
+const PRIMARY_TOOLS_SELECTOR = "#library-tools";
 
 let connectorDefinitions = CONNECTOR_DEFINITIONS;
 let auth = {
@@ -37,11 +40,23 @@ let state = createSeedState();
 let appConfig = {
   baseUrl: "",
   schemaVersion: 2,
-  companionReady: true
+  companionReady: true,
+  ratingsReady: false,
+  ratingsProvider: ""
 };
 let toastTimer;
+let metadataSearchTimer = 0;
+let metadataSearchRequestId = 0;
+const episodeOptionsCache = new Map();
+const episodeOptionsPending = new Set();
+const THEME_OPTIONS = [
+  { id: "daybreak", label: "Daybreak" },
+  { id: "studio", label: "Studio" },
+  { id: "midnight", label: "Midnight" }
+];
 
 const ui = {
+  activeTab: "watchlist",
   authMode: "login",
   authError: "",
   authBusy: false,
@@ -58,7 +73,9 @@ const ui = {
   tokenError: "",
   lastCreatedToken: "",
   lastCreatedPreview: "",
-  selectedPanel: "search"
+  selectedPanel: "search",
+  sessionDraft: createEmptySessionDraft(),
+  showAdvanced: false
 };
 
 initialize().catch((error) => {
@@ -121,13 +138,24 @@ async function handleClick(event) {
     return;
   }
 
-  const { action, titleId, value, resultId, tokenId } = actionTarget.dataset;
+  const {
+    action,
+    titleId,
+    value,
+    resultId,
+    tokenId,
+    url
+  } = actionTarget.dataset;
 
   try {
     switch (action) {
       case "switch-auth-mode":
         ui.authMode = value;
         ui.authError = "";
+        render();
+        break;
+      case "nav":
+        ui.activeTab = value || "watchlist";
         render();
         break;
       case "logout":
@@ -162,12 +190,22 @@ async function handleClick(event) {
         break;
       case "filter-status":
         state.filters.status = value;
-        render();
+        render({ domState: captureDomState(event.target) });
         break;
       case "editor-blank":
         ui.editor = createEmptyEditor();
         ui.selectedPanel = "editor";
         render();
+        scrollToPrimaryTools();
+        break;
+      case "editor-cancel":
+        resetEditorFlow();
+        break;
+      case "history-cancel":
+        resetHistoryFlow();
+        break;
+      case "theme-set":
+        await setTheme(value);
         break;
       case "editor-edit":
         loadEditorFromTitle(titleId);
@@ -179,6 +217,24 @@ async function handleClick(event) {
       case "title-advance":
         await bumpTitle(titleId);
         break;
+      case "title-log-session":
+        loadSessionDraftFromTitle(titleId);
+        render();
+        scrollToPrimaryTools();
+        break;
+      case "title-mark-next":
+        await markNextUnitWatched(titleId);
+        break;
+      case "title-choose-unit":
+        loadSessionDraftFromTitle(titleId);
+        ui.activeTab = "search";
+        ui.selectedPanel = "history";
+        render();
+        scrollToPrimaryTools();
+        break;
+      case "title-ratings-refresh":
+        await refreshTitleRatings(titleId, true);
+        break;
       case "title-status":
         await cycleTitleStatus(titleId);
         break;
@@ -188,9 +244,18 @@ async function handleClick(event) {
       case "select-result":
         loadEditorFromMetadata(resultId);
         render();
+        scrollToPrimaryTools();
+        break;
+      case "quick-add-result":
+        await quickAddMetadataResult(resultId);
         break;
       case "panel":
         ui.selectedPanel = value;
+        render();
+        scrollToPrimaryTools();
+        break;
+      case "toggle-advanced":
+        ui.showAdvanced = !ui.showAdvanced;
         render();
         break;
       case "create-token":
@@ -203,6 +268,9 @@ async function handleClick(event) {
         ui.lastCreatedToken = "";
         ui.lastCreatedPreview = "";
         render();
+        break;
+      case "open-external":
+        openExternalUrl(url);
         break;
       default:
         break;
@@ -217,12 +285,13 @@ async function handleClick(event) {
 function handleInput(event) {
   if (event.target.matches("[data-filter-input='search']")) {
     state.filters.search = event.target.value;
-    render();
+    render({ domState: captureDomState(event.target) });
     return;
   }
 
   if (event.target.matches("[data-metadata-input='query']")) {
     ui.metadataQuery = event.target.value;
+    scheduleMetadataSearch(event.target);
     return;
   }
 
@@ -236,24 +305,55 @@ function handleInput(event) {
     ui.editor[field] = event.target.value;
     return;
   }
+
+  if (event.target.matches("[data-session-field]")) {
+    const field = event.target.dataset.sessionField;
+    ui.sessionDraft[field] = event.target.value;
+    return;
+  }
 }
 
 function handleChange(event) {
   if (event.target.matches("[data-filter-select='platform']")) {
     state.filters.platform = event.target.value;
-    render();
+    render({ domState: captureDomState(event.target) });
     return;
   }
 
   if (event.target.matches("[data-filter-select='kind']")) {
     state.filters.kind = event.target.value;
-    render();
+    render({ domState: captureDomState(event.target) });
     return;
   }
 
   if (event.target.matches("[data-metadata-select='kind']")) {
     ui.metadataKind = event.target.value;
+    scheduleMetadataSearch(event.target, true);
     return;
+  }
+
+  if (event.target.matches("[data-editor-field]")) {
+    const field = event.target.dataset.editorField;
+    ui.editor[field] = event.target.value;
+    if (field === "kind") {
+      ui.editor.currentUnit = event.target.value === "movie" ? "Movie" : (ui.editor.currentUnit || "S1 E1");
+      render({ domState: captureDomState(event.target) });
+      if (ui.editor.kind === "show" && ui.editor.sourceId) {
+        void ensureEpisodeOptions(ui.editor.sourceId);
+      }
+    }
+    return;
+  }
+
+  if (event.target.matches("[data-session-field]")) {
+    const field = event.target.dataset.sessionField;
+    ui.sessionDraft[field] = event.target.value;
+    return;
+  }
+
+  if (event.target.matches("[data-session-title]")) {
+    loadSessionDraftFromTitle(event.target.value, true);
+    render();
   }
 }
 
@@ -275,13 +375,16 @@ async function handleSubmit(event) {
         await submitRegister(form);
         break;
       case "metadata-search":
-        await runMetadataSearch();
+        await runMetadataSearch({ immediate: true, domState: captureDomState(document.activeElement) });
         break;
       case "title-editor":
         await saveEditorTitle();
         break;
       case "token":
         await createCompanionToken();
+        break;
+      case "manual-session":
+        await saveManualSession();
         break;
       default:
         break;
@@ -296,6 +399,8 @@ async function handleSubmit(event) {
     } else if (formName === "token") {
       ui.tokenBusy = false;
       ui.tokenError = error.message || "Token action failed.";
+    } else if (formName === "manual-session") {
+      ui.appError = error.message || "Session entry failed.";
     } else {
       ui.appError = error.message || "Action failed.";
     }
@@ -320,6 +425,7 @@ async function submitLogin(form) {
   ui.authBusy = false;
   ui.appError = "";
   ui.editor = createEmptyEditor();
+  ui.sessionDraft = createEmptySessionDraft();
   render();
   showToast(`Signed in as ${response.user.displayName}.`);
 }
@@ -341,11 +447,13 @@ async function submitRegister(form) {
   ui.authBusy = false;
   ui.appError = "";
   ui.editor = createEmptyEditor();
+  ui.sessionDraft = createEmptySessionDraft();
   render();
   showToast(`Account created for ${response.user.displayName}.`);
 }
 
 async function performLogout() {
+  clearMetadataSearchState();
   await logoutAccount();
   auth = {
     authenticated: false,
@@ -355,25 +463,234 @@ async function performLogout() {
   tokens = [];
   state = createSeedState("Viewer", connectorDefinitions);
   ui.editor = createEmptyEditor();
+  ui.sessionDraft = createEmptySessionDraft();
   ui.metadataResults = [];
   ui.metadataError = "";
   render();
   showToast("Signed out.");
 }
 
-async function runMetadataSearch() {
+async function runMetadataSearch({ immediate = false } = {}) {
+  const query = ui.metadataQuery.trim();
+  const kind = ui.metadataKind;
+  clearTimeout(metadataSearchTimer);
+
+  if (query.length < 2) {
+    ui.metadataBusy = false;
+    ui.metadataError = "";
+    ui.metadataResults = [];
+    syncSearchPanelUi();
+    return;
+  }
+
+  const requestId = ++metadataSearchRequestId;
   ui.metadataBusy = true;
   ui.metadataError = "";
-  render();
-  const response = await searchMetadata(ui.metadataQuery, ui.metadataKind);
+  syncSearchPanelUi();
+
+  const executeSearch = async () => {
+    try {
+      const response = await searchMetadata(query, kind);
+      if (requestId !== metadataSearchRequestId || query !== ui.metadataQuery.trim() || kind !== ui.metadataKind) {
+        return;
+      }
+      ui.metadataBusy = false;
+      ui.metadataResults = response.results || [];
+      ui.metadataError = "";
+      syncSearchPanelUi();
+    } catch (error) {
+      if (requestId !== metadataSearchRequestId) {
+        return;
+      }
+      ui.metadataBusy = false;
+      ui.metadataResults = [];
+      ui.metadataError = error.message || "Metadata search failed.";
+      syncSearchPanelUi();
+    }
+  };
+
+  if (immediate) {
+    await executeSearch();
+    return;
+  }
+
+  metadataSearchTimer = window.setTimeout(() => {
+    void executeSearch();
+  }, 220);
+}
+
+function scheduleMetadataSearch(_target, immediate = false) {
+  void runMetadataSearch({ immediate });
+}
+
+function clearMetadataSearchState() {
+  clearTimeout(metadataSearchTimer);
+  metadataSearchRequestId += 1;
   ui.metadataBusy = false;
-  ui.metadataResults = response.results || [];
+  ui.metadataError = "";
+  ui.metadataResults = [];
+}
+
+function openExternalUrl(url) {
+  const normalizedUrl = normalizeExternalUrl(url);
+  if (!normalizedUrl) {
+    throw new Error("That link is unavailable right now.");
+  }
+
+  const anchor = document.createElement("a");
+  anchor.href = normalizedUrl;
+  anchor.target = "_blank";
+  anchor.rel = "noopener noreferrer";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+function resetEditorFlow() {
+  ui.editor = createEmptyEditor();
   ui.selectedPanel = "search";
   render();
+  scrollToPrimaryTools();
+}
+
+function resetHistoryFlow() {
+  ui.sessionDraft = createEmptySessionDraft();
+  ui.selectedPanel = "search";
+  render();
+  scrollToPrimaryTools();
+}
+
+async function ensureEpisodeOptions(sourceId) {
+  if (!sourceId || episodeOptionsCache.has(sourceId) || episodeOptionsPending.has(sourceId)) {
+    return;
+  }
+  episodeOptionsPending.add(sourceId);
+  render();
+  try {
+    const response = await fetchEpisodeOptions(sourceId);
+    episodeOptionsCache.set(sourceId, Array.isArray(response.episodes) ? response.episodes : []);
+    const show = response.show || {};
+    for (const title of state.titles) {
+      if (title.sourceId !== sourceId) {
+        continue;
+      }
+      if (!title.image && show.image) {
+        title.image = show.image;
+      }
+      if (!title.externalUrl && show.externalUrl) {
+        title.externalUrl = show.externalUrl;
+      }
+      if ((!Array.isArray(title.ratings) || !title.ratings.length) && Array.isArray(show.ratings) && show.ratings.length) {
+        title.ratings = show.ratings;
+      }
+      if (!title.imdbId && show.imdbId) {
+        title.imdbId = show.imdbId;
+      }
+      if (!title.summary && show.summary) {
+        title.summary = show.summary;
+      }
+    }
+  } catch (_error) {
+    episodeOptionsCache.set(sourceId, []);
+  } finally {
+    episodeOptionsPending.delete(sourceId);
+    render();
+  }
+}
+
+async function quickAddMetadataResult(resultId) {
+  const result = ui.metadataResults.find((item) => item.id === resultId);
+  if (!result) {
+    throw new Error("That search result is no longer available.");
+  }
+
+  const platformId = inferPlatformId(result.platformHint) || ui.editor.platformId || "netflix";
+  const existing = findExistingTitle(result, platformId);
+  if (existing) {
+    ui.selectedPanel = "editor";
+    loadEditorFromTitle(existing.id);
+    render();
+    scrollToPrimaryTools();
+    showToast(`${existing.title} is already in your library.`);
+    return;
+  }
+
+  const payload = createTitleFromMetadata(result, platformId);
+  await maybePopulateRatings(payload, {
+    force: appConfig.ratingsReady && (!Array.isArray(payload.ratings) || !payload.ratings.length)
+  });
+  state.titles.unshift(payload);
+  if (payload.kind === "show" && payload.sourceId) {
+    void ensureEpisodeOptions(payload.sourceId);
+  }
+  ui.selectedPanel = "search";
+  await persistAndRender({
+    saveRemote: true,
+    syncLinked: shouldAutoSync(),
+    toast: `${payload.title} added to your library.`
+  });
+}
+
+async function setTheme(themeId) {
+  const nextTheme = THEME_OPTIONS.some((theme) => theme.id === themeId) ? themeId : "daybreak";
+  if (state.preferences.theme === nextTheme) {
+    return;
+  }
+  state.preferences.theme = nextTheme;
+  await persistAndRender({
+    saveRemote: auth.authenticated,
+    syncLinked: shouldAutoSync(),
+    toast: `${labelFromTheme(nextTheme)} theme applied.`
+  });
+}
+
+async function maybePopulateRatings(payload, { force = false } = {}) {
+  if (!appConfig.ratingsReady) {
+    return payload;
+  }
+  if (!force && Array.isArray(payload.ratings) && payload.ratings.length) {
+    return payload;
+  }
+
+  try {
+    const result = await lookupRatings({
+      title: payload.title,
+      year: payload.year,
+      kind: payload.kind,
+      imdbId: payload.imdbId || ""
+    });
+    payload.ratings = Array.isArray(result.ratings) ? result.ratings : [];
+    payload.ratingUpdatedAt = result.ratingUpdatedAt || null;
+    payload.imdbId = result.imdbId || payload.imdbId || "";
+    if (!payload.externalUrl && result.externalUrl) {
+      payload.externalUrl = result.externalUrl;
+    }
+  } catch (_error) {
+    // Keep title save resilient even if the optional ratings provider is unavailable.
+  }
+
+  return payload;
 }
 
 async function saveEditorTitle() {
+  const existingTitle = ui.editor.mode === "edit" && ui.editor.titleId ? lookupTitle(ui.editor.titleId) : null;
   const payload = buildTitlePayloadFromEditor();
+  const shouldRefreshRatings = Boolean(
+    appConfig.ratingsReady && (
+      !Array.isArray(payload.ratings)
+      || !payload.ratings.length
+      || (
+        existingTitle
+        && (
+          existingTitle.title !== payload.title
+          || Number(existingTitle.year) !== Number(payload.year)
+          || existingTitle.kind !== payload.kind
+        )
+      )
+    )
+  );
+  await maybePopulateRatings(payload, { force: shouldRefreshRatings });
   if (ui.editor.mode === "edit" && ui.editor.titleId) {
     const title = lookupTitle(ui.editor.titleId);
     if (!title) {
@@ -382,6 +699,9 @@ async function saveEditorTitle() {
     Object.assign(title, payload, {
       lastActivityAt: new Date().toISOString()
     });
+    if (title.kind === "show" && title.sourceId) {
+      void ensureEpisodeOptions(title.sourceId);
+    }
     await persistAndRender({
       saveRemote: true,
       syncLinked: shouldAutoSync(),
@@ -389,6 +709,9 @@ async function saveEditorTitle() {
     });
   } else {
     state.titles.unshift(payload);
+    if (payload.kind === "show" && payload.sourceId) {
+      void ensureEpisodeOptions(payload.sourceId);
+    }
     await persistAndRender({
       saveRemote: true,
       syncLinked: shouldAutoSync(),
@@ -399,6 +722,30 @@ async function saveEditorTitle() {
   ui.editor = createEmptyEditor();
   ui.selectedPanel = "search";
   render();
+}
+
+async function refreshTitleRatings(titleId, toastOnSuccess = false) {
+  const title = lookupTitle(titleId);
+  if (!title) {
+    return;
+  }
+  if (!appConfig.ratingsReady) {
+    showToast("Configure OMDb ratings on the server first.");
+    return;
+  }
+
+  const payload = await maybePopulateRatings({ ...title }, { force: true });
+  title.ratings = payload.ratings || [];
+  title.ratingUpdatedAt = payload.ratingUpdatedAt || null;
+  title.imdbId = payload.imdbId || title.imdbId || "";
+  if (!title.externalUrl && payload.externalUrl) {
+    title.externalUrl = payload.externalUrl;
+  }
+  await persistAndRender({
+    saveRemote: true,
+    syncLinked: shouldAutoSync(),
+    toast: toastOnSuccess ? `${title.title} ratings refreshed.` : null
+  });
 }
 
 async function deleteTitle(titleId) {
@@ -423,18 +770,7 @@ async function deleteTitle(titleId) {
 }
 
 async function bumpTitle(titleId) {
-  const title = lookupTitle(titleId);
-  if (!title) {
-    return;
-  }
-
-  const session = createManualSession(title);
-  state = applySession(state, session);
-  await persistAndRender({
-    saveRemote: true,
-    syncLinked: shouldAutoSync(),
-    toast: `${title.title} moved forward.`
-  });
+  await markNextUnitWatched(titleId);
 }
 
 async function cycleTitleStatus(titleId) {
@@ -650,10 +986,14 @@ async function persistAndRender({ saveRemote = false, syncLinked = false, toast 
   }
 }
 
-function render() {
+function render({ domState = null } = {}) {
+  applyTheme();
   if (!auth.authenticated) {
     document.title = "Watchnest | Your watch home";
     appElement.innerHTML = renderAuthView();
+    if (domState) {
+      restoreDomState(domState);
+    }
     return;
   }
 
@@ -663,104 +1003,86 @@ function render() {
   const linkedStatus = state.sync.mode === "linked-file" ? "Linked file" : "Cloud account";
   const fileSyncAvailable = isFileSyncSupported();
   const editedTitle = ui.editor.mode === "edit" && ui.editor.titleId ? lookupTitle(ui.editor.titleId) : null;
+  primeVisibleEpisodeCaches(filteredTitles);
+  appElement.innerHTML = renderAuthenticatedApp({
+    filteredTitles,
+    recentSessions,
+    stats,
+    linkedStatus,
+    fileSyncAvailable,
+    editedTitle
+  });
+  document.title = `Watchnest | ${stats.totalTitles} tracked`;
+  if (domState) {
+    restoreDomState(domState);
+  }
+}
 
-  appElement.innerHTML = `
+function renderAuthenticatedApp({ filteredTitles, recentSessions, stats, linkedStatus, fileSyncAvailable, editedTitle }) {
+  return `
     <header class="topbar">
       <div class="brand-block">
         <div class="brand-row">
-          <span class="brand-mark" aria-hidden="true">LT</span>
+          <span class="brand-mark" aria-hidden="true">WN</span>
           <div>
-            <span class="eyebrow">Account-backed tracker</span>
+            <span class="eyebrow">Watch home</span>
             <h1 class="brand-title">Watchnest</h1>
           </div>
         </div>
-        <p class="brand-copy">Cloud-backed watch tracking with metadata search, browser auto-capture, Plex/Tautulli ingest, and optional linked file sync.</p>
+        <p class="brand-copy">Pick up the right episode, rate what you watched, and keep upcoming releases in view.</p>
       </div>
       <div class="status-strip">
         <span class="status-pill"><strong>${escapeHtml(auth.user.displayName)}</strong> signed in</span>
-        <span class="status-pill"><strong>${stats.totalTitles}</strong> tracked titles</span>
-        <span class="status-pill"><strong>${linkedStatus}</strong> storage</span>
+        <span class="status-pill"><strong>${stats.totalTitles}</strong> titles</span>
+        <span class="status-pill"><strong>${escapeHtml(formatRelative(state.meta.updatedAt))}</strong> updated</span>
+        <div class="theme-switch" aria-label="Theme switcher">
+          ${THEME_OPTIONS.map((theme) => `
+            <button class="chip-button ${state.preferences.theme === theme.id ? "primary" : ""}" data-action="theme-set" data-value="${theme.id}">
+              ${escapeHtml(theme.label)}
+            </button>
+          `).join("")}
+        </div>
         <button class="button ghost" data-action="logout">Sign out</button>
       </div>
     </header>
 
-    <section class="hero-grid">
-      <article class="hero-card">
-        <span class="eyebrow">Useful today</span>
-        <h2 class="hero-title">Search real metadata, manage your queue, and connect real playback capture.</h2>
-        <p class="hero-copy">
-          Local accounts work immediately. Google, Facebook, and Apple sign-in hooks are wired in and become active as soon as their OAuth credentials are configured on the server.
-          The library below now saves to your signed-in account instead of living only inside one browser tab.
-        </p>
-        <div class="hero-actions">
-          <button class="button" data-action="panel" data-value="search">Find titles</button>
-          <button class="button secondary" data-action="editor-blank">Add manually</button>
-          <button class="button ghost" data-action="create-token">Create ingest token</button>
-          <button class="button ghost" data-action="export-snapshot">Export snapshot</button>
-        </div>
-        <div class="panel-note">
-          Primary auth is account-backed. Optional linked file sync still works when you want a portable JSON copy on a local folder or synced drive.
-        </div>
-      </article>
+    <nav class="main-tabs" aria-label="Primary navigation">
+      ${renderMainTabButton("watchlist", "Watchlist")}
+      ${renderMainTabButton("search", "Add & update")}
+      ${renderMainTabButton("setup", "Setup")}
+    </nav>
 
-      <aside class="hero-card sync-card">
+    ${ui.appError ? `<div class="panel-note app-inline-note">${escapeHtml(ui.appError)}</div>` : ""}
+
+    ${ui.activeTab === "search"
+      ? renderSearchTab(editedTitle)
+      : ui.activeTab === "setup"
+        ? renderSetupTab(linkedStatus, fileSyncAvailable)
+        : renderWatchlistTab(filteredTitles, recentSessions)}
+  `;
+}
+
+function renderMainTabButton(tabId, label) {
+  return `<button class="main-tab ${ui.activeTab === tabId ? "active" : ""}" data-action="nav" data-value="${tabId}">${escapeHtml(label)}</button>`;
+}
+
+function renderWatchlistTab(filteredTitles, recentSessions) {
+  const watchStates = filteredTitles.map((title) => ({ title, state: getTitleWatchState(title) }));
+  const activeTitles = watchStates.filter((entry) => !entry.state.comingSoon && entry.title.status !== "completed");
+  const completedTitles = watchStates.filter((entry) => entry.title.status === "completed" && !entry.state.comingSoon);
+  const comingSoonTitles = watchStates.filter((entry) => entry.state.comingSoon);
+
+  return `
+    <section class="dashboard-grid">
+      <section class="panel section-panel" data-section="library">
         <div class="panel-head">
           <div>
-            <h2>Account and sync</h2>
-            <p>Server state for normal use, plus export and linked-file tools when you want portability.</p>
+            <span class="eyebrow">Watchlist</span>
+            <h2>Keep moving forward.</h2>
+            <p>See what to watch next, what is coming soon, and what you already finished.</p>
           </div>
-        </div>
-        <div class="sync-grid">
-          <div class="stat-block">
-            <span class="label">Signed in as</span>
-            <strong class="stat-value">${escapeHtml(auth.user.displayName)}</strong>
-            <p class="stat-caption">${escapeHtml(auth.user.email || "Provider-based account")}</p>
-          </div>
-          <div class="stat-block">
-            <span class="label">Sync mode</span>
-            <strong class="stat-value">${escapeHtml(linkedStatus)}</strong>
-            <p class="stat-caption">${state.sync.mode === "linked-file" ? `Linked to ${escapeHtml(state.sync.fileName || "selected file")}` : "Server-backed account storage is active."}</p>
-          </div>
-          <div class="stat-block">
-            <span class="label">Last update</span>
-            <strong class="stat-value">${escapeHtml(formatRelative(state.meta.updatedAt))}</strong>
-            <p class="stat-caption">${escapeHtml(formatTimestamp(state.meta.updatedAt))}</p>
-          </div>
-          <div class="stat-block">
-            <span class="label">Linked file support</span>
-            <strong class="stat-value">${fileSyncAvailable ? "Ready" : "Export only"}</strong>
-            <p class="stat-caption">${fileSyncAvailable ? "File System Access API detected." : "This browser can still import and export snapshots."}</p>
-          </div>
-        </div>
-        <div class="panel-actions">
-          <button class="button secondary" data-action="link-sync-file">Link sync file</button>
-          <button class="button ghost" data-action="sync-now">Push sync now</button>
-          <button class="button ghost" data-action="pull-linked">Pull linked file</button>
-          <button class="button ghost" data-action="toggle-auto-sync">${state.sync.autoSync ? "Pause auto sync" : "Resume auto sync"}</button>
-          <button class="button ghost" data-action="clear-sync-link">Remove link</button>
-          <button class="button ghost" data-action="import-snapshot">Import snapshot</button>
-        </div>
-        ${state.sync.lastError ? `<div class="panel-note">${escapeHtml(state.sync.lastError)}</div>` : ""}
-        ${ui.appError ? `<div class="panel-note">${escapeHtml(ui.appError)}</div>` : ""}
-      </aside>
-    </section>
-
-    <section class="stats-grid">
-      ${renderMetricCard("Tracked titles", stats.totalTitles, `${stats.watchingTitles} in progress, ${stats.completedTitles} completed.`)}
-      ${renderMetricCard("Minutes this week", `${stats.weeklyMinutes} min`, `${stats.weeklySessions} sessions recorded in the last 7 days.`)}
-      ${renderMetricCard("Current streak", `${stats.streakDays} days`, "A day counts when at least one watch session is recorded.")}
-      ${renderMetricCard("Connected adapters", stats.connectedConnectors, `${stats.connectedConnectors} active, ${stats.idleConnectors} idle.`)}
-    </section>
-
-    <section class="content-grid">
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <h2>Your library</h2>
-            <p>Filter, update progress, pin favorites, and keep one unified queue across services.</p>
-          </div>
-          <div class="panel-actions">
-            <input class="search-bar" data-filter-input="search" type="search" value="${escapeAttribute(state.filters.search)}" placeholder="Search titles, genres, or summaries">
+          <div class="panel-actions library-tools-inline">
+            <input class="search-bar" data-filter-input="search" type="search" value="${escapeAttribute(state.filters.search)}" placeholder="Filter your library">
             <select class="select-field" data-filter-select="platform" aria-label="Filter by platform">
               ${renderPlatformOptions(state.filters.platform)}
             </select>
@@ -776,65 +1098,184 @@ function render() {
             .map((filter) => `<button class="filter-chip ${state.filters.status === filter ? "active" : ""}" data-action="filter-status" data-value="${filter}">${labelFromStatus(filter)}</button>`)
             .join("")}
         </div>
-        <div class="library-grid">
-          ${filteredTitles.length ? filteredTitles.map((title) => renderTitleCard(title)).join("") : renderEmptyState("Your library is empty.", "Use the search panel to add a show or movie with real metadata.")}
-        </div>
+
+        ${activeTitles.length ? `
+          <div class="section-subhead">
+            <h3>Watch next</h3>
+            <p>Quick actions move each title to the next episode automatically.</p>
+          </div>
+          <div class="library-rail">
+            ${activeTitles.map(({ title }) => renderTitleCard(title)).join("")}
+          </div>
+        ` : renderEmptyState(
+          "Nothing in progress yet.",
+          "Search on the right, add a title, and your next episode will appear here."
+        )}
+
+        ${comingSoonTitles.length ? `
+          <div class="section-subhead">
+            <h3>Coming soon</h3>
+            <p>Upcoming episodes and next seasons stay visible until release day.</p>
+          </div>
+          <div class="library-rail">
+            ${comingSoonTitles.map(({ title }) => renderTitleCard(title)).join("")}
+          </div>
+        ` : ""}
+
+        ${completedTitles.length ? `
+          <div class="section-subhead">
+            <h3>Completed</h3>
+            <p>Finished titles stay compact, with ratings and source links intact.</p>
+          </div>
+          <div class="library-rail completed">
+            ${completedTitles.slice(0, 12).map(({ title }) => renderTitleCard(title)).join("")}
+          </div>
+        ` : ""}
       </section>
 
       <aside class="stacked-panels">
-        <section class="panel">
+        <section class="panel section-panel" data-section="search" id="library-tools">
           <div class="panel-head">
             <div>
-              <h2>OTT connectors</h2>
-              <p>These adapters receive browser auto-capture, Plex/Tautulli events, and manual updates into one timeline.</p>
+              <span class="eyebrow">Add titles</span>
+              <h2>Search on the side.</h2>
+              <p>Add something new or update where you are in one place.</p>
             </div>
           </div>
-          <div class="connector-grid">
-            ${state.connectors.map((connector) => renderConnectorCard(connector)).join("")}
-          </div>
+          ${renderSearchWorkspace(ui.editor.mode === "edit" && ui.editor.titleId ? lookupTitle(ui.editor.titleId) : null, true)}
         </section>
 
-        <section class="panel">
+        <section class="panel section-panel" data-section="activity">
           <div class="panel-head">
             <div>
-              <h2>Recent activity</h2>
-              <p>Every session rolls into one account timeline, whether it came from auto-capture, webhooks, or manual updates.</p>
+              <span class="eyebrow">Recent</span>
+              <h2>Latest watch updates.</h2>
+              <p>Episode completions and manual check-ins only.</p>
             </div>
           </div>
-          <div class="timeline-list">
-            ${recentSessions.length ? recentSessions.map((session) => renderSessionCard(session)).join("") : renderEmptyState("No sessions yet.", "Add a title and log progress, or pair the companion flow to send observations in.")}
+          <div class="timeline-list compact">
+            ${recentSessions.length ? recentSessions.map((session) => renderSessionCard(session)).join("") : renderEmptyState("No watch updates yet.", "Mark an episode watched and it will show up here.")}
           </div>
         </section>
       </aside>
     </section>
+  `;
+}
 
+function renderSearchTab(editedTitle) {
+  return `
+    <section class="panel section-panel search-tab-shell" data-section="search" id="library-tools">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">Add and update</span>
+          <h2>Search, add, or mark watched.</h2>
+          <p>Use the tabs below to add something new or jump a title forward by episode.</p>
+        </div>
+      </div>
+      ${renderSearchWorkspace(editedTitle, false)}
+    </section>
+  `;
+}
+
+function renderSetupTab(linkedStatus, fileSyncAvailable) {
+  return `
     <section class="support-grid">
-      <section class="panel">
+      <section class="panel section-panel" data-section="account">
         <div class="panel-head">
           <div>
-            <h2>Search and editor</h2>
-            <p>Search live metadata, then review and save the title into your library.</p>
-          </div>
-          <div class="panel-actions">
-            <button class="chip-button ${ui.selectedPanel === "search" ? "primary" : ""}" data-action="panel" data-value="search">Search</button>
-            <button class="chip-button ${ui.selectedPanel === "editor" ? "primary" : ""}" data-action="panel" data-value="editor">Editor</button>
+            <span class="eyebrow">Account</span>
+            <h2>Your account</h2>
+            <p>${escapeHtml(auth.user.email || "Signed in")}</p>
           </div>
         </div>
-        ${ui.selectedPanel === "search" ? renderSearchPanel() : renderEditorPanel(editedTitle)}
+        <div class="sync-grid">
+          <div class="stat-block">
+            <span class="label">Profile</span>
+            <strong class="stat-value">${escapeHtml(auth.user.displayName)}</strong>
+            <p class="stat-caption">${escapeHtml(auth.user.email || "Account ready")}</p>
+          </div>
+          <div class="stat-block">
+            <span class="label">Storage</span>
+            <strong class="stat-value">${escapeHtml(linkedStatus)}</strong>
+            <p class="stat-caption">${state.sync.mode === "linked-file" ? `Linked to ${escapeHtml(state.sync.fileName || "selected file")}` : "Saved to your account."}</p>
+          </div>
+          <div class="stat-block">
+            <span class="label">Last update</span>
+            <strong class="stat-value">${escapeHtml(formatRelative(state.meta.updatedAt))}</strong>
+            <p class="stat-caption">${escapeHtml(formatTimestamp(state.meta.updatedAt))}</p>
+          </div>
+          <div class="stat-block">
+            <span class="label">File sync</span>
+            <strong class="stat-value">${fileSyncAvailable ? "Ready" : "Export only"}</strong>
+            <p class="stat-caption">${fileSyncAvailable ? "Optional local backup is available." : "Snapshot export is available."}</p>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <button class="button secondary" data-action="export-snapshot">Export</button>
+          <button class="button ghost" data-action="import-snapshot">Import</button>
+          <button class="button ghost" data-action="link-sync-file">Link file</button>
+          <button class="button ghost" data-action="sync-now">Push sync now</button>
+          <button class="button ghost" data-action="pull-linked">Pull linked file</button>
+          <button class="button ghost" data-action="toggle-auto-sync">${state.sync.autoSync ? "Pause auto sync" : "Resume auto sync"}</button>
+          <button class="button ghost" data-action="clear-sync-link">Remove link</button>
+        </div>
+        ${state.sync.lastError ? `<div class="panel-note">${escapeHtml(state.sync.lastError)}</div>` : ""}
       </section>
 
-      <section class="panel">
+      <section class="panel section-panel" data-section="setup">
         <div class="panel-head">
           <div>
-            <h2>Ingest tokens</h2>
-            <p>Create a token for browser auto-capture, Plex webhooks, Tautulli, or any local helper that posts watch observations.</p>
+            <span class="eyebrow">Connectors</span>
+            <h2>Playback inputs</h2>
+            <p>Optional browser, Plex, and Tautulli ingestion.</p>
+          </div>
+        </div>
+        <div class="connector-grid">
+          ${state.connectors.map((connector) => renderConnectorCard(connector)).join("")}
+        </div>
+      </section>
+
+      <section class="panel section-panel" data-section="tokens">
+        <div class="panel-head">
+          <div>
+            <span class="eyebrow">Tokens</span>
+            <h2>Companion tokens</h2>
+            <p>Create a token only if you want browser capture or webhook setup.</p>
           </div>
         </div>
         ${renderTokensPanel()}
       </section>
     </section>
   `;
-  document.title = `Watchnest | ${stats.totalTitles} tracked`;
+}
+
+function renderSearchWorkspace(editedTitle, compact = false) {
+  return `
+    <div class="search-workspace ${compact ? "compact" : ""}">
+      <div class="workspace-tabs">
+        <button class="chip-button ${ui.selectedPanel === "search" ? "primary" : ""}" data-action="panel" data-value="search">Search</button>
+        <button class="chip-button ${ui.selectedPanel === "editor" ? "primary" : ""}" data-action="panel" data-value="editor">Add manually</button>
+        <button class="chip-button ${ui.selectedPanel === "history" ? "primary" : ""}" data-action="panel" data-value="history">Mark watched</button>
+      </div>
+      ${ui.selectedPanel === "search"
+        ? renderSearchPanel()
+        : ui.selectedPanel === "history"
+          ? renderSessionEntryPanel()
+          : renderEditorPanel(editedTitle)}
+    </div>
+  `;
+}
+
+function primeVisibleEpisodeCaches(titles) {
+  const candidates = titles
+    .filter((title) => title.kind === "show" && title.sourceId)
+    .slice(0, 8);
+
+  for (const title of candidates) {
+    if (!episodeOptionsCache.has(title.sourceId) && !episodeOptionsPending.has(title.sourceId)) {
+      void ensureEpisodeOptions(title.sourceId);
+    }
+  }
 }
 
 function renderAuthView() {
@@ -916,7 +1357,15 @@ function renderRegisterForm() {
   `;
 }
 
-function renderSearchPanel() {
+function renderSearchPanelLegacy() {
+  const trimmedQuery = ui.metadataQuery.trim();
+  const resultMarkup = ui.metadataBusy
+    ? renderEmptyState("Searching…", "Live results are loading.")
+    : ui.metadataResults.length
+      ? ui.metadataResults.map((result) => renderMetadataResult(result)).join("")
+      : trimmedQuery.length >= 2
+        ? renderEmptyState("No results yet.", "Try a different title, or switch between shows and movies.")
+        : renderEmptyState("Start typing to search.", "Search updates as you type.");
   return `
     <div class="stack-form">
       <form class="stack-form" data-form="metadata-search">
@@ -930,16 +1379,125 @@ function renderSearchPanel() {
           <button class="button" type="submit" ${ui.metadataBusy ? "disabled" : ""}>${ui.metadataBusy ? "Searching..." : "Search"}</button>
         </div>
       </form>
+      <div class="support-copy">Live search. Results update as you type.</div>
       ${ui.metadataError ? `<div class="panel-note">${escapeHtml(ui.metadataError)}</div>` : ""}
       <div class="search-results">
-        ${ui.metadataResults.length ? ui.metadataResults.map((result) => renderMetadataResult(result)).join("") : renderEmptyState("No metadata results yet.", "Run a search to pull live show and movie matches into the editor.")}
+        ${resultMarkup}
       </div>
     </div>
   `;
 }
 
+function getMetadataSearchStatusCopy() {
+  const trimmedQuery = ui.metadataQuery.trim();
+  if (ui.metadataBusy) {
+    return "Searching live results.";
+  }
+  if (trimmedQuery.length < 2) {
+    return "Live search. Results update as you type.";
+  }
+  if (ui.metadataResults.length) {
+    return `${ui.metadataResults.length} match${ui.metadataResults.length === 1 ? "" : "es"} found.`;
+  }
+  return "No close matches yet. Try another title.";
+}
+
+function getMetadataSearchResultsMarkup() {
+  const trimmedQuery = ui.metadataQuery.trim();
+  if (ui.metadataBusy) {
+    return renderEmptyState("Searching...", "Live results are loading.");
+  }
+  if (ui.metadataResults.length) {
+    return ui.metadataResults.map((result) => renderMetadataResult(result)).join("");
+  }
+  if (trimmedQuery.length >= 2) {
+    return renderEmptyState("No results yet.", "Try a different title, or switch between shows and movies.");
+  }
+  return renderEmptyState("Start typing to search.", "Search updates as you type.");
+}
+
+function syncSearchPanelUi() {
+  const panel = appElement.querySelector("[data-search-panel='metadata']");
+  if (!(panel instanceof HTMLElement)) {
+    return false;
+  }
+
+  const status = panel.querySelector("[data-search-status]");
+  const error = panel.querySelector("[data-search-error]");
+  const results = panel.querySelector("[data-search-results]");
+  const submit = panel.querySelector("[data-search-submit]");
+
+  if (!(status instanceof HTMLElement) || !(error instanceof HTMLElement) || !(results instanceof HTMLElement) || !(submit instanceof HTMLButtonElement)) {
+    return false;
+  }
+
+  status.textContent = getMetadataSearchStatusCopy();
+  error.textContent = ui.metadataError || "";
+  error.hidden = !ui.metadataError;
+  results.innerHTML = getMetadataSearchResultsMarkup();
+  submit.disabled = ui.metadataBusy;
+  submit.textContent = ui.metadataBusy ? "Searching..." : "Search";
+  return true;
+}
+
+function renderSearchPanel() {
+  return `
+    <div class="stack-form" data-search-panel="metadata">
+      <form class="stack-form" data-form="metadata-search">
+        <div class="panel-actions">
+          <input class="search-bar" data-metadata-input="query" type="search" value="${escapeAttribute(ui.metadataQuery)}" placeholder="Search movies or shows" required>
+          <select class="select-field" data-metadata-select="kind" aria-label="Search type">
+            <option value="all" ${ui.metadataKind === "all" ? "selected" : ""}>Movies and shows</option>
+            <option value="show" ${ui.metadataKind === "show" ? "selected" : ""}>Shows only</option>
+            <option value="movie" ${ui.metadataKind === "movie" ? "selected" : ""}>Movies only</option>
+          </select>
+          <button class="button" data-search-submit type="submit" ${ui.metadataBusy ? "disabled" : ""}>${ui.metadataBusy ? "Searching..." : "Search"}</button>
+        </div>
+      </form>
+      <div class="support-copy" data-search-status>${escapeHtml(getMetadataSearchStatusCopy())}</div>
+      <div class="panel-note" data-search-error ${ui.metadataError ? "" : "hidden"}>${escapeHtml(ui.metadataError)}</div>
+      <div class="search-results" data-search-results>
+        ${getMetadataSearchResultsMarkup()}
+      </div>
+    </div>
+  `;
+}
+
+function renderCurrentUnitControl({ kind, sourceId, value, inputMode, label = "Current unit", placeholder = "S1 E1 or Movie" }) {
+  const episodeOptions = sourceId ? (episodeOptionsCache.get(sourceId) || []) : [];
+  const loadingEpisodes = sourceId ? episodeOptionsPending.has(sourceId) : false;
+  const fieldAttribute = inputMode === "session" ? "data-session-field" : "data-editor-field";
+
+  if (kind === "show" && episodeOptions.length) {
+    return `
+      <label class="form-field form-span">
+        <span>${escapeHtml(label)}</span>
+        <select class="select-field" ${fieldAttribute}="currentUnit">
+          ${episodeOptions.map((episode) => `
+            <option
+              value="${escapeAttribute(episode.value)}"
+              ${episode.value === value ? "selected" : ""}
+              ${inputMode === "session" && episode.available === false ? "disabled" : ""}
+            >
+              ${escapeHtml(`${episode.label}${episode.available === false && episode.airstamp ? ` (Coming ${formatEpisodeAirLabel(episode)})` : ""}`)}
+            </option>
+          `).join("")}
+        </select>
+      </label>
+    `;
+  }
+
+  return `
+    <label class="form-field form-span">
+      <span>${escapeHtml(label)}</span>
+      <input class="search-bar" ${fieldAttribute}="currentUnit" type="text" value="${escapeAttribute(value)}" placeholder="${escapeAttribute(placeholder)}">
+      ${loadingEpisodes ? `<span class="support-copy">Loading episode list…</span>` : ""}
+    </label>
+  `;
+}
+
 function renderEditorPanel(editedTitle) {
-  const titleLabel = ui.editor.mode === "edit" ? `Editing ${editedTitle?.title || "title"}` : "Create a title";
+  const titleLabel = ui.editor.mode === "edit" ? `Edit ${editedTitle?.title || "title"}` : "Add a title";
   return `
     <form class="stack-form" data-form="title-editor">
       <div class="panel-note">${escapeHtml(titleLabel)}</div>
@@ -970,18 +1528,21 @@ function renderEditorPanel(editedTitle) {
           <select class="select-field" data-editor-field="status">
             <option value="queued" ${ui.editor.status === "queued" ? "selected" : ""}>Queued</option>
             <option value="watching" ${ui.editor.status === "watching" ? "selected" : ""}>Watching</option>
-            <option value="paused" ${ui.editor.status === "paused" ? "selected" : ""}>Paused</option>
             <option value="completed" ${ui.editor.status === "completed" ? "selected" : ""}>Completed</option>
           </select>
         </label>
         <label class="form-field">
-          <span>Progress</span>
-          <input class="search-bar" data-editor-field="progress" type="number" min="0" max="100" value="${escapeAttribute(String(ui.editor.progress))}">
+          <span>Your rating</span>
+          <input class="search-bar" data-editor-field="userRating" type="number" min="0.5" max="10" step="0.5" value="${escapeAttribute(String(ui.editor.userRating ?? ""))}" placeholder="8.5">
         </label>
-        <label class="form-field form-span">
-          <span>Current unit</span>
-          <input class="search-bar" data-editor-field="currentUnit" type="text" value="${escapeAttribute(ui.editor.currentUnit)}" placeholder="S1 E1 or Movie">
-        </label>
+        ${renderCurrentUnitControl({
+          kind: ui.editor.kind,
+          sourceId: ui.editor.sourceId,
+          value: ui.editor.currentUnit,
+          inputMode: "editor",
+          label: ui.editor.kind === "movie" ? "Watch state" : "Next episode to watch",
+          placeholder: ui.editor.kind === "movie" ? "Movie" : "S1 E1"
+        })}
         <label class="form-field form-span">
           <span>Genres</span>
           <input class="search-bar" data-editor-field="genres" type="text" value="${escapeAttribute(ui.editor.genres)}" placeholder="Drama, Mystery">
@@ -992,9 +1553,66 @@ function renderEditorPanel(editedTitle) {
         </label>
       </div>
       <div class="panel-actions">
-        <button class="button" type="submit">${ui.editor.mode === "edit" ? "Save changes" : "Add title"}</button>
+        <button class="button" type="submit">${ui.editor.mode === "edit" ? "Save" : "Add to library"}</button>
+        <button class="button ghost" type="button" data-action="editor-cancel">Cancel</button>
         <button class="button ghost" type="button" data-action="editor-blank">Reset editor</button>
+        ${ui.editor.mode === "edit" && ui.editor.titleId ? `<button class="button ghost" type="button" data-action="editor-delete" data-title-id="${escapeAttribute(ui.editor.titleId)}">Delete</button>` : ""}
+        ${ui.editor.mode === "edit" && appConfig.ratingsReady ? `<button class="button ghost" type="button" data-action="title-ratings-refresh" data-title-id="${escapeAttribute(ui.editor.titleId || "")}">Refresh ratings</button>` : ""}
       </div>
+      ${renderRatingsPanel(ui.editor.ratings, ui.editor.ratingUpdatedAt, ui.editor.imdbId, false, normalizeUserRating(ui.editor.userRating))}
+    </form>
+  `;
+}
+
+function renderSessionEntryPanel() {
+  const availableTitles = getFilteredTitles().length ? getFilteredTitles() : state.titles;
+  if (!availableTitles.length) {
+    return renderEmptyState("No titles to update yet.", "Add a title first, then mark an episode or movie watched.");
+  }
+
+  const selectedTitle = lookupTitle(ui.sessionDraft.titleId) || availableTitles[0];
+  const draft = selectedTitle && selectedTitle.id !== ui.sessionDraft.titleId
+    ? { ...ui.sessionDraft, titleId: selectedTitle.id, currentUnit: getSuggestedCompletedUnit(selectedTitle) }
+    : ui.sessionDraft;
+  ui.sessionDraft = draft;
+
+  return `
+    <form class="stack-form" data-form="manual-session">
+      <div class="panel-note">Pick the episode or movie you finished. Watchnest will move the title forward for you.</div>
+      <div class="form-grid">
+        <label class="form-field form-span">
+          <span>Title</span>
+          <select class="select-field" data-session-title="titleId">
+            ${availableTitles.map((title) => `<option value="${title.id}" ${draft.titleId === title.id ? "selected" : ""}>${escapeHtml(title.title)} (${escapeHtml(labelFromStatus(title.status))})</option>`).join("")}
+          </select>
+        </label>
+        <label class="form-field">
+          <span>Finished at</span>
+          <input class="search-bar" data-session-field="watchedAtLocal" type="datetime-local" value="${escapeAttribute(draft.watchedAtLocal)}">
+        </label>
+        <label class="form-field">
+          <span>Device</span>
+          <input class="search-bar" data-session-field="device" type="text" value="${escapeAttribute(draft.device)}" placeholder="Living room TV">
+        </label>
+        ${renderCurrentUnitControl({
+          kind: selectedTitle.kind,
+          sourceId: selectedTitle.sourceId,
+          value: draft.currentUnit,
+          inputMode: "session",
+          label: selectedTitle.kind === "movie" ? "Mark as watched" : "Episode completed",
+          placeholder: selectedTitle.kind === "movie" ? "Movie" : "S1 E1"
+        })}
+        <label class="form-field form-span">
+          <span>Note</span>
+          <textarea class="textarea-field" data-session-field="summary" rows="3" placeholder="Optional note about this watch update">${escapeHtml(draft.summary)}</textarea>
+        </label>
+      </div>
+      <div class="panel-actions">
+        <button class="button" type="submit">Mark watched</button>
+        <button class="button ghost" type="button" data-action="history-cancel">Cancel</button>
+        <button class="button ghost" type="button" data-action="title-log-session" data-title-id="${selectedTitle.id}">Use next up</button>
+      </div>
+      ${renderRatingsPanel(selectedTitle.ratings, selectedTitle.ratingUpdatedAt, selectedTitle.imdbId, false, selectedTitle.userRating)}
     </form>
   `;
 }
@@ -1017,7 +1635,7 @@ function renderTokensPanel() {
           <div class="storage-row">
             <div>
               <h3>Copy this token now</h3>
-              <p>This value is only shown once. Paste it into the browser extension or use it in Plex/Tautulli setup.</p>
+              <p>This value is only shown once.</p>
             </div>
             <button class="chip-button" data-action="clear-token-reveal">Hide</button>
           </div>
@@ -1025,11 +1643,16 @@ function renderTokensPanel() {
         </div>
       ` : ""}
       <div class="storage-card">
-        <h3>Ingest endpoints</h3>
-        <p>POST observations to <span class="code-chip">${escapeHtml(`${appConfig.baseUrl}/api/ingest/observation`)}</span></p>
-        <p>Plex webhook: <span class="code-chip">${escapeHtml(`${appConfig.baseUrl}/api/integrations/plex/webhook?token=YOUR_TOKEN`)}</span></p>
-        <p>Tautulli webhook: <span class="code-chip">${escapeHtml(`${appConfig.baseUrl}/api/integrations/tautulli/webhook?token=YOUR_TOKEN`)}</span></p>
-        <p class="support-copy">The browser extension posts bearer-token observations automatically. Plex and Tautulli can post directly to their own webhook routes with the same token.</p>
+        <h3>Where to use it</h3>
+        <p>Use the token in the Watchnest browser companion, or in Plex / Tautulli setup if you want automatic playback tracking.</p>
+        <details class="support-disclosure">
+          <summary>Show technical setup URLs</summary>
+          <div class="disclosure-copy">
+            <p>POST observations to <span class="code-chip">${escapeHtml(`${appConfig.baseUrl}/api/ingest/observation`)}</span></p>
+            <p>Plex webhook: <span class="code-chip">${escapeHtml(`${appConfig.baseUrl}/api/integrations/plex/webhook?token=YOUR_TOKEN`)}</span></p>
+            <p>Tautulli webhook: <span class="code-chip">${escapeHtml(`${appConfig.baseUrl}/api/integrations/tautulli/webhook?token=YOUR_TOKEN`)}</span></p>
+          </div>
+        </details>
       </div>
       <div class="storage-list">
         ${tokens.length ? tokens.map((token) => `
@@ -1058,11 +1681,12 @@ function renderMetricCard(label, value, caption) {
   `;
 }
 
-function renderMetadataResult(result) {
+function renderMetadataResultLegacy(result) {
+  const resultImage = proxyImageUrl(result.image);
   const platformId = inferPlatformId(result.platformHint) || ui.editor.platformId;
   return `
     <article class="result-card">
-      <div class="result-media" style="${result.image ? `background-image: linear-gradient(rgba(31,35,39,0.18), rgba(31,35,39,0.32)), url('${escapeAttribute(result.image)}');` : ""}">
+      <div class="result-media" style="${resultImage ? `background-image: linear-gradient(rgba(31,35,39,0.18), rgba(31,35,39,0.32)), url('${escapeAttribute(resultImage)}');` : ""}">
         <span class="poster-platform">${escapeHtml(result.kind === "movie" ? "Movie" : "Show")}</span>
       </div>
       <div class="card-body">
@@ -1071,7 +1695,6 @@ function renderMetadataResult(result) {
             <h3>${escapeHtml(result.title)}</h3>
             <p>${escapeHtml(result.year ? String(result.year) : "Year unknown")}${result.platformHint ? ` / ${escapeHtml(result.platformHint)}` : ""}</p>
           </div>
-          <button class="icon-button" data-action="select-result" data-result-id="${escapeAttribute(result.id)}">Use</button>
         </div>
         <div class="chip-row">
           <span class="tag">${escapeHtml(result.source)}</span>
@@ -1079,16 +1702,21 @@ function renderMetadataResult(result) {
           ${(result.genres || []).slice(0, 2).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}
         </div>
         <p class="blurb">${escapeHtml(result.summary || "No summary available.")}</p>
+        <div class="card-actions">
+          <button class="chip-button primary" data-action="quick-add-result" data-result-id="${escapeAttribute(result.id)}">Add</button>
+          <button class="chip-button" data-action="select-result" data-result-id="${escapeAttribute(result.id)}">Review</button>
+        </div>
       </div>
     </article>
   `;
 }
 
-function renderTitleCard(title) {
+function renderTitleCardLegacy(title) {
   const connector = getConnectorDefinition(title.platformId);
   const progress = `${Math.round(title.progress)}%`;
-  const posterStyle = title.image
-    ? `background-image: linear-gradient(rgba(31,35,39,0.14), rgba(31,35,39,0.4)), url('${escapeAttribute(title.image)}'); background-size: cover; background-position: center;`
+  const titleImage = proxyImageUrl(title.image);
+  const posterStyle = titleImage
+    ? `background-image: linear-gradient(rgba(31,35,39,0.14), rgba(31,35,39,0.4)), url('${escapeAttribute(titleImage)}'); background-size: cover; background-position: center;`
     : `--poster-accent: ${connector?.accent || "#0f766e"};`;
 
   return `
@@ -1114,6 +1742,7 @@ function renderTitleCard(title) {
           <span class="tag">${escapeHtml(title.kind === "movie" ? "Movie" : "Series")}</span>
           ${title.genres.slice(0, 2).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}
         </div>
+        ${renderRatingsPanel(title.ratings, title.ratingUpdatedAt, title.imdbId, true)}
         <p class="blurb">${escapeHtml(title.summary)}</p>
         <div class="progress-stack">
           <div class="progress-head">
@@ -1127,9 +1756,150 @@ function renderTitleCard(title) {
         </div>
         <div class="card-actions">
           <button class="chip-button primary" data-action="title-advance" data-title-id="${title.id}">Log progress</button>
+          <button class="chip-button" data-action="title-log-session" data-title-id="${title.id}">Log session</button>
           <button class="chip-button" data-action="title-status" data-title-id="${title.id}">Cycle status</button>
+          ${appConfig.ratingsReady ? `<button class="chip-button" data-action="title-ratings-refresh" data-title-id="${title.id}">${title.ratings.length ? "Refresh ratings" : "Get ratings"}</button>` : ""}
           <button class="chip-button" data-action="editor-delete" data-title-id="${title.id}">Delete</button>
-          ${title.externalUrl ? `<a class="chip-button" href="${escapeAttribute(title.externalUrl)}" target="_blank" rel="noreferrer">Source</a>` : ""}
+          ${title.externalUrl ? `<button class="chip-button" type="button" data-action="open-external" data-url="${escapeAttribute(title.externalUrl)}">Source</button>` : ""}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderRatingsPanel(ratings, ratingUpdatedAt, imdbId, compact = false, userRating = null) {
+  const items = [];
+  const normalizedUserRating = normalizeUserRating(userRating);
+  if (normalizedUserRating !== null) {
+    items.push(`<span class="tag rating-tag user-rating"><strong>You</strong> ${escapeHtml(formatUserRating(normalizedUserRating))}</span>`);
+  }
+  if (Array.isArray(ratings)) {
+    items.push(...ratings.map((rating) => `<span class="tag rating-tag"><strong>${escapeHtml(rating.source)}</strong> ${escapeHtml(rating.value)}</span>`));
+  }
+
+  if (!items.length) {
+    return compact ? "" : `<div class="ratings-panel empty"><span class="support-copy">Add your rating, and external ratings will appear when available.</span></div>`;
+  }
+
+  return `
+    <div class="ratings-panel ${compact ? "compact" : ""}">
+      <div class="chip-row">
+        ${items.join("")}
+      </div>
+      ${!compact ? `<p class="support-copy">${escapeHtml(ratingUpdatedAt ? `Updated ${formatRelative(ratingUpdatedAt)}` : "Ratings update when metadata is available")}${imdbId ? ` / ${escapeHtml(imdbId)}` : ""}</p>` : ""}
+    </div>
+  `;
+}
+
+function renderConnectorCardLegacy(connector) {
+  const definition = getConnectorDefinition(connector.id);
+  return `
+    <article class="connector-card" style="--connector-accent: ${definition?.accent || "#0f766e"};">
+      <div class="connector-head">
+        <div>
+          <h3>${escapeHtml(definition?.name || connector.id)}</h3>
+          <div class="connector-meta">${escapeHtml(connector.mode)} / ${escapeHtml(labelFromConnectorStatus(connector.status))}</div>
+        </div>
+        <span class="micro-pill"><strong>${escapeHtml(connector.health)}</strong></span>
+      </div>
+      <p class="connector-copy">${escapeHtml(definition?.summary || "Connector ready for OTT activity ingestion.")}</p>
+      <div class="chip-row">
+        ${(definition?.capabilities || []).map((capability) => `<span class="tag">${escapeHtml(capability)}</span>`).join("")}
+      </div>
+      <div class="connector-meta">Last signal ${connector.lastSeenAt ? escapeHtml(formatRelative(connector.lastSeenAt)) : "never"}</div>
+    </article>
+  `;
+}
+
+function renderPosterImage(imageUrl, altText, className) {
+  if (!imageUrl) {
+    return "";
+  }
+  return `<img class="${className}" src="${escapeAttribute(imageUrl)}" alt="${escapeAttribute(altText)}" loading="eager" decoding="async" referrerpolicy="no-referrer">`;
+}
+
+function renderMetadataResult(result) {
+  const resultImage = proxyImageUrl(result.image);
+  const platformId = inferPlatformId(result.platformHint) || ui.editor.platformId || "all";
+  const connector = getConnectorDefinition(platformId);
+  return `
+    <article class="result-card">
+      <div class="result-media ${resultImage ? "has-image" : ""}" data-platform="${escapeAttribute(platformId)}">
+        ${renderPosterImage(resultImage, `${result.title} poster`, "media-image")}
+        <div class="media-scrim" aria-hidden="true"></div>
+        <span class="poster-platform">${escapeHtml(result.kind === "movie" ? "Movie" : "Show")}</span>
+        <button class="poster-quick-action subtle" type="button" data-action="quick-add-result" data-result-id="${escapeAttribute(result.id)}">Add</button>
+      </div>
+      <div class="card-body">
+        <div class="card-top">
+          <div>
+            <h3>${escapeHtml(result.title)}</h3>
+            <p>${escapeHtml(result.year ? String(result.year) : "Year unknown")}${result.platformHint ? ` / ${escapeHtml(result.platformHint)}` : ""}</p>
+          </div>
+        </div>
+        <div class="chip-row">
+          <span class="tag">${escapeHtml(result.source)}</span>
+          <span class="tag">${escapeHtml(connector?.shortName || platformId)}</span>
+          ${(result.genres || []).slice(0, 2).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}
+        </div>
+        ${renderRatingsPanel(result.ratings || [], result.ratingUpdatedAt || null, result.imdbId || "", true)}
+        <p class="blurb clamp-2">${escapeHtml(result.summary || "No summary available.")}</p>
+        <div class="card-actions">
+          <button class="chip-button" data-action="select-result" data-result-id="${escapeAttribute(result.id)}">Review</button>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderTitleCard(title) {
+  const connector = getConnectorDefinition(title.platformId);
+  const titleImage = proxyImageUrl(title.image);
+  const watchState = getTitleWatchState(title);
+  const availabilityLabel = watchState.comingSoon
+    ? `Coming ${watchState.nextAirLabel}${connector?.name ? ` on ${connector.name}` : ""}`
+    : watchState.nextUnit
+      ? `Up next ${watchState.nextUnit}${connector?.name ? ` on ${connector.name}` : ""}`
+      : watchState.completed
+        ? "All caught up"
+        : "Ready to start";
+  const primaryAction = watchState.quickActionLabel;
+
+  return `
+    <article class="panel title-card compact">
+      <div class="poster ${titleImage ? "poster-image" : ""}" data-platform="${escapeAttribute(title.platformId || "all")}">
+        ${renderPosterImage(titleImage, `${title.title} poster`, "poster-art")}
+        <div class="poster-scrim" aria-hidden="true"></div>
+        <span class="poster-platform">${escapeHtml(connector?.shortName || title.platformId)}</span>
+        <strong class="poster-title">${escapeHtml(title.title)}</strong>
+        <span class="poster-copy">${escapeHtml(watchState.posterCopy)}</span>
+        ${primaryAction ? `<button class="poster-quick-action" type="button" data-action="title-mark-next" data-title-id="${title.id}" ${watchState.quickActionDisabled ? "disabled" : ""}>Done</button>` : ""}
+      </div>
+      <div class="card-body">
+        <div class="card-top">
+          <div>
+            <h3>${escapeHtml(title.title)}</h3>
+            <p>${escapeHtml(connector?.name || title.platformId)} / ${escapeHtml(String(title.year || ""))}</p>
+          </div>
+          <div class="chip-row">
+            <button class="icon-button" data-action="title-favorite" data-title-id="${title.id}">${title.favorite ? "Pinned" : "Pin"}</button>
+            <button class="icon-button" data-action="editor-edit" data-title-id="${title.id}">Edit</button>
+          </div>
+        </div>
+        <div class="chip-row">
+          <span class="tag status-${watchState.statusTone}">${escapeHtml(watchState.statusLabel)}</span>
+          <span class="tag">${escapeHtml(watchState.kindLabel)}</span>
+          ${title.genres.slice(0, 2).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}
+        </div>
+        ${renderRatingsPanel(title.ratings, title.ratingUpdatedAt, title.imdbId, true, title.userRating)}
+        <div class="watch-meta">
+          <div class="watch-line"><strong>${escapeHtml(availabilityLabel)}</strong></div>
+          ${watchState.lastCompletedLabel ? `<div class="watch-line soft">Last watched ${escapeHtml(watchState.lastCompletedLabel)}</div>` : ""}
+          <div class="watch-line soft">${escapeHtml(watchState.metaCopy)}</div>
+        </div>
+        <div class="card-actions">
+          ${title.kind === "show" ? `<button class="chip-button" data-action="title-choose-unit" data-title-id="${title.id}">Choose episode</button>` : `<button class="chip-button" data-action="title-choose-unit" data-title-id="${title.id}">Update</button>`}
+          ${title.externalUrl ? `<button class="chip-button" type="button" data-action="open-external" data-url="${escapeAttribute(title.externalUrl)}">Source</button>` : ""}
         </div>
       </div>
     </article>
@@ -1139,7 +1909,7 @@ function renderTitleCard(title) {
 function renderConnectorCard(connector) {
   const definition = getConnectorDefinition(connector.id);
   return `
-    <article class="connector-card" style="--connector-accent: ${definition?.accent || "#0f766e"};">
+    <article class="connector-card" data-connector="${escapeAttribute(connector.id)}">
       <div class="connector-head">
         <div>
           <h3>${escapeHtml(definition?.name || connector.id)}</h3>
@@ -1170,9 +1940,8 @@ function renderSessionCard(session) {
       </div>
       <p class="timeline-copy">${escapeHtml(session.summary)}</p>
       <div class="chip-row">
-        <span class="tag">${escapeHtml(`${session.durationMin} min`)}</span>
         <span class="tag">${escapeHtml(session.device)}</span>
-        <span class="tag">${escapeHtml(`${Math.round(session.progressBefore)}% to ${Math.round(session.progressAfter)}%`)}</span>
+        ${session.currentUnit ? `<span class="tag">${escapeHtml(session.currentUnit)}</span>` : ""}
       </div>
     </article>
   `;
@@ -1188,13 +1957,400 @@ function renderSupportCard(kicker, title, copy) {
   `;
 }
 
-function renderEmptyState(title, copy) {
+function normalizeUserRating(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return Math.min(10, Math.max(0, Math.round(numeric * 10) / 10));
+}
+
+function formatUserRating(value) {
+  return `${Number(value).toFixed(Number(value) % 1 === 0 ? 0 : 1)}/10`;
+}
+
+function normalizeEpisodeValue(value) {
+  return String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+
+function findEpisodeIndex(options, value) {
+  const normalized = normalizeEpisodeValue(value);
+  return options.findIndex((episode) => normalizeEpisodeValue(episode.value) === normalized);
+}
+
+function computeEpisodeProgressFromIndex(index, total) {
+  if (!Number.isFinite(index) || index < 0 || !Number.isFinite(total) || total <= 0) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, Math.round(((index + 1) / total) * 100)));
+}
+
+function getNextEpisodeLabelFallback(value) {
+  const match = /S(\d+)\s*E(\d+)/i.exec(String(value || ""));
+  if (!match) {
+    return String(value || "Next episode").trim() || "Next episode";
+  }
+  return `S${Number(match[1])} E${Number(match[2]) + 1}`;
+}
+
+function getEpisodeOptionsForTitle(title) {
+  if (!title || title.kind !== "show" || !title.sourceId) {
+    return [];
+  }
+  return episodeOptionsCache.get(title.sourceId) || [];
+}
+
+function parseEpisodeTimestamp(episode) {
+  const candidate = episode?.airstamp || episode?.airdate || "";
+  const timestamp = new Date(candidate).getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function isFutureEpisode(episode) {
+  const timestamp = parseEpisodeTimestamp(episode);
+  return Number.isFinite(timestamp) && timestamp > Date.now();
+}
+
+function formatEpisodeAirLabel(episode) {
+  const timestamp = parseEpisodeTimestamp(episode);
+  if (!Number.isFinite(timestamp)) {
+    return "soon";
+  }
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(timestamp));
+}
+
+function getSuggestedCompletedUnit(title) {
+  if (!title || title.kind === "movie") {
+    return "Movie";
+  }
+
+  const watchState = getTitleWatchState(title);
+  if (watchState.comingSoon) {
+    if (title.lastCompletedUnit) {
+      return title.lastCompletedUnit;
+    }
+    const episodeOptions = getEpisodeOptionsForTitle(title);
+    const nextIndex = findEpisodeIndex(episodeOptions, watchState.nextUnit);
+    if (nextIndex > 0) {
+      return episodeOptions[nextIndex - 1].value;
+    }
+  }
+
+  return watchState.nextUnit || title.lastCompletedUnit || title.currentUnit || "S1 E1";
+}
+
+function getTitleWatchState(title) {
+  if (!title) {
+    return {
+      completed: false,
+      comingSoon: false,
+      nextUnit: "",
+      nextAirLabel: "",
+      kindLabel: "Show",
+      statusLabel: "Queued",
+      statusTone: "queued",
+      posterCopy: "",
+      lastCompletedLabel: "",
+      metaCopy: "",
+      quickActionLabel: "",
+      quickActionDisabled: true
+    };
+  }
+
+  if (title.kind === "movie") {
+    const completed = title.status === "completed";
+    return {
+      completed,
+      comingSoon: false,
+      nextUnit: completed ? "" : "Movie",
+      nextAirLabel: "",
+      kindLabel: "Movie",
+      statusLabel: completed ? "Completed" : title.status === "queued" ? "Queued" : "Ready",
+      statusTone: completed ? "completed" : title.status === "watching" ? "watching" : "queued",
+      posterCopy: completed ? "Completed" : "Movie night",
+      lastCompletedLabel: completed ? "Movie" : "",
+      metaCopy: `Last updated ${formatRelative(title.lastActivityAt)}`,
+      quickActionLabel: completed ? "" : "Mark watched",
+      quickActionDisabled: completed
+    };
+  }
+
+  const episodeOptions = getEpisodeOptionsForTitle(title);
+  let nextIndex = findEpisodeIndex(episodeOptions, title.currentUnit);
+  const lastCompletedIndex = findEpisodeIndex(episodeOptions, title.lastCompletedUnit);
+  if (nextIndex < 0 && lastCompletedIndex >= 0) {
+    nextIndex = Math.min(lastCompletedIndex + 1, episodeOptions.length - 1);
+  }
+  if (nextIndex < 0 && episodeOptions.length) {
+    nextIndex = 0;
+  }
+
+  const nextEpisode = nextIndex >= 0 ? episodeOptions[nextIndex] : null;
+  const noMoreEpisodes = episodeOptions.length > 0 && nextIndex >= episodeOptions.length;
+  const completed = title.status === "completed" || (!nextEpisode && episodeOptions.length > 0 && lastCompletedIndex === episodeOptions.length - 1);
+  const comingSoon = Boolean(nextEpisode && isFutureEpisode(nextEpisode));
+  const nextUnit = completed ? "" : (nextEpisode?.value || title.currentUnit || "S1 E1");
+  const nextAirLabel = nextEpisode ? formatEpisodeAirLabel(nextEpisode) : "";
+
+  return {
+    completed,
+    comingSoon,
+    nextUnit,
+    nextAirLabel,
+    kindLabel: "Series",
+    statusLabel: completed ? "Completed" : comingSoon ? "Coming soon" : title.status === "queued" ? "Queued" : "Watching",
+    statusTone: completed ? "completed" : comingSoon ? "coming-soon" : title.status === "queued" ? "queued" : "watching",
+    posterCopy: completed ? "All caught up" : comingSoon ? `${nextUnit} soon` : nextUnit,
+    lastCompletedLabel: title.lastCompletedUnit || "",
+    metaCopy: completed
+      ? `Last updated ${formatRelative(title.lastActivityAt)}`
+      : comingSoon
+        ? `${nextUnit} lands ${nextAirLabel}`
+        : `Start from ${nextUnit}`,
+    quickActionLabel: completed || comingSoon || !nextUnit ? "" : "Mark watched",
+    quickActionDisabled: completed || comingSoon || !nextUnit,
+    nextEpisode,
+    noMoreEpisodes
+  };
+}
+
+async function markNextUnitWatched(titleId) {
+  const title = lookupTitle(titleId);
+  if (!title) {
+    return;
+  }
+  const watchState = getTitleWatchState(title);
+  const targetUnit = watchState.nextUnit || (title.kind === "movie" ? "Movie" : title.currentUnit);
+  if (!targetUnit || watchState.quickActionDisabled) {
+    return;
+  }
+
+  await markTitleThroughUnit(title, targetUnit, {
+    startedAt: new Date().toISOString(),
+    device: "This device",
+    summary: `${title.title} was marked watched in Watchnest.`,
+    sourceLabel: "Quick update",
+    sourceType: "manual"
+  });
+  await persistAndRender({
+    saveRemote: true,
+    syncLinked: shouldAutoSync(),
+    toast: `${title.title} moved to the next episode.`
+  });
+}
+
+async function markTitleThroughUnit(title, targetUnit, {
+  startedAt = new Date().toISOString(),
+  device = "This device",
+  summary = "",
+  sourceLabel = "Manual update",
+  sourceType = "manual"
+} = {}) {
+  if (!title) {
+    return;
+  }
+  const progressBefore = Number.isFinite(Number(title.progress)) ? Number(title.progress) : 0;
+
+  if (title.kind === "movie") {
+    title.status = "completed";
+    title.progress = 100;
+    title.lastCompletedUnit = "Movie";
+    title.currentUnit = "Completed";
+    title.lastActivityAt = startedAt;
+  } else {
+    if (title.sourceId) {
+      await ensureEpisodeOptions(title.sourceId);
+    }
+
+    const episodeOptions = getEpisodeOptionsForTitle(title);
+    if (!episodeOptions.length) {
+      title.lastCompletedUnit = targetUnit;
+      title.currentUnit = getNextEpisodeLabelFallback(targetUnit);
+      title.status = "watching";
+      title.progress = Math.min(100, Math.max(Number(title.progress) || 0, 12));
+      title.lastActivityAt = startedAt;
+    } else {
+    const targetIndex = findEpisodeIndex(episodeOptions, targetUnit);
+    if (targetIndex < 0) {
+      throw new Error("That episode could not be found.");
+    }
+
+    const currentIndex = findEpisodeIndex(episodeOptions, title.currentUnit);
+    if (targetIndex > currentIndex && currentIndex >= 0) {
+      const firstPending = episodeOptions[currentIndex]?.value || title.currentUnit;
+      const shouldCatchUp = window.confirm(`Mark ${firstPending} through ${targetUnit} as watched?`);
+      if (!shouldCatchUp) {
+        return;
+      }
+    }
+
+    title.lastCompletedUnit = episodeOptions[targetIndex]?.value || targetUnit;
+    const nextEpisode = episodeOptions[targetIndex + 1] || null;
+    title.currentUnit = nextEpisode ? nextEpisode.value : "Completed";
+    title.progress = computeEpisodeProgressFromIndex(targetIndex, episodeOptions.length);
+    title.status = nextEpisode ? "watching" : "completed";
+    title.lastActivityAt = startedAt;
+    }
+  }
+
+  state.sessions = [
+    {
+      id: createId("session"),
+      titleId: title.id,
+      platformId: title.platformId,
+      startedAt,
+      durationMin: title.kind === "movie" ? 120 : 42,
+      progressBefore,
+      progressAfter: title.progress,
+      sourceType,
+      sourceLabel,
+      device,
+      currentUnit: targetUnit,
+      eventType: "watched",
+      summary: summary || `${title.title} updated to ${targetUnit}.`
+    },
+    ...state.sessions
+  ].slice(0, 60);
+
+  state.meta.updatedAt = new Date().toISOString();
+}
+
+function renderEmptyState(title, copy, actions = "") {
   return `
     <div class="empty-state">
       <h3>${escapeHtml(title)}</h3>
       <p>${escapeHtml(copy)}</p>
+      ${actions}
     </div>
   `;
+}
+
+function captureDomState(target = document.activeElement) {
+  const snapshot = {
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+    focus: null
+  };
+
+  if (!target || !(target instanceof HTMLElement)) {
+    return snapshot;
+  }
+
+  const selector = getDomRestoreSelector(target);
+  if (!selector) {
+    return snapshot;
+  }
+
+  snapshot.focus = {
+    selector,
+    selectionStart: typeof target.selectionStart === "number" ? target.selectionStart : null,
+    selectionEnd: typeof target.selectionEnd === "number" ? target.selectionEnd : null
+  };
+  return snapshot;
+}
+
+function restoreDomState(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    if (snapshot.focus?.selector) {
+      const element = appElement.querySelector(snapshot.focus.selector);
+      if (element instanceof HTMLElement) {
+        element.focus({ preventScroll: true });
+        if (
+          typeof element.setSelectionRange === "function"
+          && Number.isInteger(snapshot.focus.selectionStart)
+          && Number.isInteger(snapshot.focus.selectionEnd)
+        ) {
+          element.setSelectionRange(snapshot.focus.selectionStart, snapshot.focus.selectionEnd);
+        }
+      }
+    }
+    window.scrollTo(snapshot.scrollX || 0, snapshot.scrollY || 0);
+    requestAnimationFrame(() => {
+      window.scrollTo(snapshot.scrollX || 0, snapshot.scrollY || 0);
+    });
+  });
+}
+
+function getDomRestoreSelector(element) {
+  if (element.matches("[data-filter-input='search']")) {
+    return "[data-filter-input='search']";
+  }
+  if (element.matches("[data-filter-select='platform']")) {
+    return "[data-filter-select='platform']";
+  }
+  if (element.matches("[data-filter-select='kind']")) {
+    return "[data-filter-select='kind']";
+  }
+  if (element.matches("[data-metadata-input='query']")) {
+    return "[data-metadata-input='query']";
+  }
+  if (element.matches("[data-metadata-select='kind']")) {
+    return "[data-metadata-select='kind']";
+  }
+  return "";
+}
+
+function scrollToPrimaryTools() {
+  const panel = document.querySelector(PRIMARY_TOOLS_SELECTOR);
+  if (panel instanceof HTMLElement) {
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function findExistingTitle(result, platformId) {
+  const targetTitle = normalizeLookupTitle(result.title);
+  return state.titles.find((title) => (
+    normalizeLookupTitle(title.title) === targetTitle
+    && title.kind === (result.kind === "movie" ? "movie" : "show")
+    && Number(title.year || 0) === Number(result.year || 0)
+    && title.platformId === platformId
+  )) || null;
+}
+
+function normalizeLookupTitle(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function proxyImageUrl(imageUrl) {
+  const value = String(imageUrl || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (value.startsWith("./api/image?") || value.startsWith("/api/image?")) {
+    return value;
+  }
+  if (/^https?:\/\//i.test(value)) {
+    return `./api/image?url=${encodeURIComponent(value)}`;
+  }
+  return value;
+}
+
+function normalizeExternalUrl(url) {
+  const value = String(url || "").trim();
+  if (!value) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(value, window.location.origin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    return parsed.toString();
+  } catch (_error) {
+    return "";
+  }
 }
 
 function getFilteredTitles() {
@@ -1288,6 +2444,7 @@ function createEmptyEditor() {
   return {
     mode: "create",
     titleId: null,
+    sourceId: "",
     title: "",
     kind: "show",
     year: "",
@@ -1299,7 +2456,21 @@ function createEmptyEditor() {
     summary: "",
     image: "",
     externalUrl: "",
-    source: "manual"
+    source: "manual",
+    ratings: [],
+    ratingUpdatedAt: null,
+    imdbId: "",
+    userRating: ""
+  };
+}
+
+function createEmptySessionDraft() {
+  return {
+    titleId: "",
+    watchedAtLocal: toDateTimeLocalValue(new Date().toISOString()),
+    currentUnit: "S1 E1",
+    device: "This device",
+    summary: ""
   };
 }
 
@@ -1312,6 +2483,7 @@ function loadEditorFromMetadata(resultId) {
   ui.editor = {
     mode: "create",
     titleId: null,
+    sourceId: starter.sourceId || result.sourceId || result.id || "",
     title: starter.title,
     kind: starter.kind,
     year: starter.year,
@@ -1323,9 +2495,16 @@ function loadEditorFromMetadata(resultId) {
     summary: starter.summary,
     image: starter.image || "",
     externalUrl: starter.externalUrl || "",
-    source: starter.source || "metadata"
+    source: starter.source || "metadata",
+    ratings: starter.ratings || [],
+    ratingUpdatedAt: starter.ratingUpdatedAt || null,
+    imdbId: starter.imdbId || "",
+    userRating: starter.userRating ?? ""
   };
   ui.selectedPanel = "editor";
+  if (ui.editor.kind === "show" && ui.editor.sourceId) {
+    void ensureEpisodeOptions(ui.editor.sourceId);
+  }
 }
 
 function loadEditorFromTitle(titleId) {
@@ -1336,6 +2515,7 @@ function loadEditorFromTitle(titleId) {
   ui.editor = {
     mode: "edit",
     titleId: title.id,
+    sourceId: title.sourceId || "",
     title: title.title,
     kind: title.kind,
     year: title.year,
@@ -1347,9 +2527,16 @@ function loadEditorFromTitle(titleId) {
     summary: title.summary,
     image: title.image || "",
     externalUrl: title.externalUrl || "",
-    source: title.source || "manual"
+    source: title.source || "manual",
+    ratings: title.ratings || [],
+    ratingUpdatedAt: title.ratingUpdatedAt || null,
+    imdbId: title.imdbId || "",
+    userRating: title.userRating ?? ""
   };
   ui.selectedPanel = "editor";
+  if (ui.editor.kind === "show" && ui.editor.sourceId) {
+    void ensureEpisodeOptions(ui.editor.sourceId);
+  }
 }
 
 function buildTitlePayloadFromEditor() {
@@ -1358,29 +2545,84 @@ function buildTitlePayloadFromEditor() {
     throw new Error("Title name is required.");
   }
   const kind = ui.editor.kind === "movie" ? "movie" : "show";
-  const progress = clampNumber(ui.editor.progress, 0, 100);
   const status = ui.editor.status || "queued";
+  const sourceId = ui.editor.sourceId || lookupTitle(ui.editor.titleId)?.sourceId || "";
+  const nextUnit = ui.editor.currentUnit || (kind === "movie" ? "Movie" : "S1 E1");
+  const episodeOptions = kind === "show" && sourceId ? (episodeOptionsCache.get(sourceId) || []) : [];
+  const currentIndex = kind === "show" ? findEpisodeIndex(episodeOptions, nextUnit) : -1;
+  const inferredLastCompletedUnit = currentIndex > 0 ? episodeOptions[currentIndex - 1]?.value || "" : "";
   return {
     id: ui.editor.titleId || createId("title"),
+    sourceId,
     title,
     kind,
     year: Number.isFinite(Number(ui.editor.year)) ? Number(ui.editor.year) : new Date().getFullYear(),
     platformId: ui.editor.platformId || "netflix",
     status,
-    progress,
+    progress: status === "completed" ? 100 : kind === "movie" ? 0 : computeEpisodeProgressFromIndex(Math.max(0, currentIndex - 1), episodeOptions.length),
     genres: ui.editor.genres
       .split(",")
       .map((genre) => genre.trim())
       .filter(Boolean)
       .slice(0, 3),
-    currentUnit: ui.editor.currentUnit || (kind === "movie" ? "Movie" : "S1 E1"),
+    currentUnit: status === "completed" && kind === "movie" ? "Completed" : nextUnit,
     summary: ui.editor.summary || "Tracked in Watchnest.",
     lastActivityAt: new Date().toISOString(),
     favorite: lookupTitle(ui.editor.titleId)?.favorite || false,
     image: ui.editor.image || "",
     externalUrl: ui.editor.externalUrl || "",
-    source: ui.editor.source || "manual"
+    source: ui.editor.source || "manual",
+    ratings: Array.isArray(ui.editor.ratings) ? ui.editor.ratings : lookupTitle(ui.editor.titleId)?.ratings || [],
+    ratingUpdatedAt: ui.editor.ratingUpdatedAt || lookupTitle(ui.editor.titleId)?.ratingUpdatedAt || null,
+    imdbId: ui.editor.imdbId || lookupTitle(ui.editor.titleId)?.imdbId || "",
+    userRating: normalizeUserRating(ui.editor.userRating),
+    lastCompletedUnit: status === "completed" && kind === "show"
+      ? episodeOptions[episodeOptions.length - 1]?.value || nextUnit
+      : inferredLastCompletedUnit
   };
+}
+
+function loadSessionDraftFromTitle(titleId, preserveTimestamp = false) {
+  const title = lookupTitle(titleId) || state.titles[0];
+  if (!title) {
+    ui.sessionDraft = createEmptySessionDraft();
+    ui.selectedPanel = "history";
+    return;
+  }
+
+  ui.sessionDraft = {
+    titleId: title.id,
+    watchedAtLocal: preserveTimestamp && ui.sessionDraft.watchedAtLocal
+      ? ui.sessionDraft.watchedAtLocal
+      : toDateTimeLocalValue(new Date().toISOString()),
+    currentUnit: getSuggestedCompletedUnit(title),
+    device: ui.sessionDraft.device || "This device",
+    summary: ""
+  };
+  ui.selectedPanel = "history";
+  if (title.kind === "show" && title.sourceId) {
+    void ensureEpisodeOptions(title.sourceId);
+  }
+}
+
+async function saveManualSession() {
+  const title = lookupTitle(ui.sessionDraft.titleId);
+  if (!title) {
+    throw new Error("Choose a title before marking something watched.");
+  }
+  await markTitleThroughUnit(title, ui.sessionDraft.currentUnit || title.currentUnit, {
+    startedAt: fromDateTimeLocalValue(ui.sessionDraft.watchedAtLocal),
+    device: ui.sessionDraft.device || "This device",
+    summary: ui.sessionDraft.summary || `${title.title} was updated manually in Watchnest.`,
+    sourceLabel: "Manual update",
+    sourceType: "manual"
+  });
+  ui.sessionDraft = createEmptySessionDraft();
+  await persistAndRender({
+    saveRemote: true,
+    syncLinked: shouldAutoSync(),
+    toast: `${title.title} updated.`
+  });
 }
 
 function lookupTitle(titleId) {
@@ -1493,6 +2735,34 @@ function formatTimestamp(value) {
     hour: "numeric",
     minute: "2-digit"
   }).format(date);
+}
+
+function toDateTimeLocalValue(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromDateTimeLocalValue(value) {
+  if (!value) {
+    return new Date().toISOString();
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
+function applyTheme() {
+  const theme = THEME_OPTIONS.some((item) => item.id === state.preferences?.theme)
+    ? state.preferences.theme
+    : "daybreak";
+  document.body.dataset.theme = theme;
+}
+
+function labelFromTheme(themeId) {
+  return THEME_OPTIONS.find((theme) => theme.id === themeId)?.label || "Daybreak";
 }
 
 function daysBetween(left, right) {

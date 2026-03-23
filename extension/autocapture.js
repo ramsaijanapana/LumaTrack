@@ -1,4 +1,9 @@
 (function watchnestAutoCapture() {
+  if (window.__watchnestAutoCaptureReady) {
+    return;
+  }
+  window.__watchnestAutoCaptureReady = true;
+
   const platform = inferPlatform(window.location.hostname, window.location.pathname);
   if (!platform) {
     return;
@@ -14,7 +19,16 @@
   };
 
   const titleSelectors = {
-    netflix: ["[data-uia='video-title']", "[data-uia*='title'] h4", "h1", "h4"],
+    netflix: [
+      "[data-uia='video-title']",
+      "[data-uia*='title'] h4",
+      "[data-uia*='title']",
+      ".video-title h4",
+      ".previewModal--player-titleTreatment-logo img",
+      ".ltr-1v0p6f7 img",
+      "h1",
+      "h4"
+    ],
     "prime-video": ["[data-automation-id='title']", ".atvwebplayersdk-title-text", "h1", "h2"],
     "disney-plus": ["[data-testid*='title']", "h1", "h2"],
     max: ["[data-testid*='title']", "h1", "h2"],
@@ -225,13 +239,24 @@
     const structured = readStructuredData();
     const textCandidates = collectTextCandidates(titleSelectors[platform.id] || []);
     const detailCandidates = collectTextCandidates(detailSelectors[platform.id] || []);
+    const imageAltCandidates = collectAttributeCandidates(
+      [
+        ".previewModal--player-titleTreatment-logo img",
+        "[data-uia*='title'] img",
+        "[aria-label*='title' i] img",
+        "img[alt]"
+      ],
+      "alt"
+    );
     const pageTitle = cleanTitle(document.title);
 
     const title = chooseBestTitle([
       structured?.title,
       ...textCandidates,
+      ...imageAltCandidates,
       readMetaContent("meta[property='og:title']"),
       readMetaContent("meta[name='twitter:title']"),
+      extractTitleFromPathOrHash(),
       pageTitle
     ]);
 
@@ -256,6 +281,19 @@
     for (const selector of selectors) {
       for (const node of document.querySelectorAll(selector)) {
         const text = cleanTitle(node.textContent || "");
+        if (text && !isGenericText(text)) {
+          values.push(text);
+        }
+      }
+    }
+    return dedupe(values);
+  }
+
+  function collectAttributeCandidates(selectors, attributeName) {
+    const values = [];
+    for (const selector of selectors) {
+      for (const node of document.querySelectorAll(selector)) {
+        const text = cleanTitle(node.getAttribute(attributeName) || "");
         if (text && !isGenericText(text)) {
           values.push(text);
         }
@@ -321,14 +359,27 @@
 
   function pickActiveVideo() {
     const videos = Array.from(document.querySelectorAll("video")).filter((video) => {
+      if (!video.isConnected) {
+        return false;
+      }
       const rect = video.getBoundingClientRect();
-      return rect.width * rect.height > 0 && (video.readyState > 0 || normalizeNumber(video.currentTime) > 0);
+      const area = rect.width * rect.height;
+      const hasPlaybackSignal =
+        normalizeNumber(video.currentTime) > 0
+        || normalizeNumber(video.duration) > 0
+        || video.readyState > 0
+        || !video.paused;
+      return area > 0 || hasPlaybackSignal;
     });
 
     videos.sort((left, right) => {
       const leftRect = left.getBoundingClientRect();
       const rightRect = right.getBoundingClientRect();
-      return rightRect.width * rightRect.height - leftRect.width * leftRect.height;
+      const leftArea = leftRect.width * leftRect.height;
+      const rightArea = rightRect.width * rightRect.height;
+      const leftScore = (left.paused ? 0 : 100000000) + (normalizeNumber(left.currentTime) > 0 ? 1000000 : 0) + leftArea;
+      const rightScore = (right.paused ? 0 : 100000000) + (normalizeNumber(right.currentTime) > 0 ? 1000000 : 0) + rightArea;
+      return rightScore - leftScore;
     });
 
     return videos[0] || null;
@@ -336,6 +387,15 @@
 
   function readMetaContent(selector) {
     return cleanTitle(document.querySelector(selector)?.content || "");
+  }
+
+  function extractTitleFromPathOrHash() {
+    const raw = `${window.location.pathname} ${window.location.hash}`;
+    const match = /title[=/:-]([^/?#&]+)/i.exec(raw) || /watch\/([^/?#&]+)/i.exec(raw);
+    if (!match) {
+      return "";
+    }
+    return cleanTitle(decodeURIComponent(match[1]).replace(/[-_]+/g, " "));
   }
 
   function extractEpisodeLabel(text) {

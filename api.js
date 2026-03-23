@@ -80,6 +80,11 @@ export function searchMetadata(query, kind = "all") {
   return requestJson(`./api/metadata/search?${params.toString()}`);
 }
 
+export function fetchEpisodeOptions(sourceId) {
+  const params = new URLSearchParams({ sourceId });
+  return requestJson(`./api/metadata/episodes?${params.toString()}`);
+}
+
 export function fetchTokens() {
   return requestJson("./api/tokens");
 }
@@ -94,5 +99,12 @@ export function createToken(label) {
 export function deleteToken(tokenId) {
   return requestJson(`./api/tokens/${tokenId}`, {
     method: "DELETE"
+  });
+}
+
+export function lookupRatings(input) {
+  return requestJson("./api/ratings/lookup", {
+    method: "POST",
+    body: JSON.stringify(input)
   });
 }

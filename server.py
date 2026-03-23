@@ -26,10 +26,21 @@ SCHEMA_VERSION = 2
 HTTP_HEADERS = {"User-Agent": "Watchnest/0.1 (watch tracker)"}
 APPLE_AUDIENCE = "https://appleid.apple.com"
 APPLE_CLIENT_SECRET_CACHE = {}
+OMDB_CACHE = {}
+SEARCH_CACHE = {}
+EPISODE_CACHE = {}
 PUBLIC_BASE_URL_ENV = "LUMATRACK_PUBLIC_BASE_URL"
 DATABASE_URL_ENV = "DATABASE_URL"
 POSTGRES_SCHEMES = ("postgres://", "postgresql://")
 RATE_LIMIT_STATE = {}
+ALLOWED_REMOTE_IMAGE_HOSTS = {
+    "static.tvmaze.com",
+    "www.tvmaze.com",
+    "upload.wikimedia.org",
+    "commons.wikimedia.org",
+    "m.media-amazon.com",
+    "ia.media-imdb.com",
+}
 SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -895,6 +906,10 @@ def parse_year(value):
     return int(match.group(1)) if match else None
 
 
+def current_timestamp():
+    return time.time()
+
+
 def parse_int(value, default=0):
     try:
         return int(float(value))
@@ -943,6 +958,233 @@ def normalize_event_type(value):
     if raw in {"progress", "timeupdate", "heartbeat", "tick"}:
         return "progress"
     return raw or "progress"
+
+
+def ratings_provider_configured():
+    return bool(env_value("OMDB_API_KEY"))
+
+
+def normalize_ratings_list(ratings):
+    if not isinstance(ratings, list):
+        return []
+    normalized = []
+    for item in ratings:
+        source = str((item or {}).get("source") or "").strip()
+        value = str((item or {}).get("value") or "").strip()
+        if source and value:
+            normalized.append({"source": source, "value": value})
+    return normalized[:4]
+
+
+def cache_lookup(cache_store_obj, cache_key, max_age_seconds):
+    cached = cache_store_obj.get(cache_key)
+    if not cached:
+        return None
+    if current_timestamp() - cached["stored_at"] > max_age_seconds:
+        cache_store_obj.pop(cache_key, None)
+        return None
+    return cached["value"]
+
+
+def cache_store(cache_store_obj, cache_key, value, max_items=256):
+    cache_store_obj[cache_key] = {
+        "stored_at": current_timestamp(),
+        "value": value,
+    }
+    if len(cache_store_obj) > max_items:
+        oldest_key = min(cache_store_obj, key=lambda key: cache_store_obj[key]["stored_at"])
+        cache_store_obj.pop(oldest_key, None)
+
+
+def fetch_omdb_ratings(title, year=None, kind=None, imdb_id=None):
+    api_key = env_value("OMDB_API_KEY")
+    if not api_key:
+        return {"ratings": [], "imdbId": imdb_id or "", "ratingUpdatedAt": None, "externalUrl": ""}
+
+    normalized_title = (title or "").strip()
+    if not normalized_title and not imdb_id:
+        return {"ratings": [], "imdbId": "", "ratingUpdatedAt": None, "externalUrl": ""}
+
+    cache_key = ("omdb", imdb_id or normalized_title.lower(), year or "", kind or "")
+    cached = cache_lookup(OMDB_CACHE, cache_key, 12 * 60 * 60)
+    if cached is not None:
+        return cached
+
+    params = {
+        "apikey": api_key,
+        "r": "json",
+        "tomatoes": "true",
+    }
+    if imdb_id:
+        params["i"] = imdb_id
+    else:
+        params["t"] = normalized_title
+        if year:
+            params["y"] = str(year)
+        if kind == "movie":
+            params["type"] = "movie"
+        elif kind == "show":
+            params["type"] = "series"
+
+    response = requests.get(
+        "https://www.omdbapi.com/",
+        params=params,
+        headers=HTTP_HEADERS,
+        timeout=12,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("Response") == "False":
+        result = {"ratings": [], "imdbId": imdb_id or "", "ratingUpdatedAt": None, "externalUrl": ""}
+        cache_store(OMDB_CACHE, cache_key, result)
+        return result
+
+    ratings = []
+    imdb_rating = (payload.get("imdbRating") or "").strip()
+    if imdb_rating and imdb_rating != "N/A":
+        ratings.append({"source": "IMDb", "value": f"{imdb_rating}/10"})
+    for item in payload.get("Ratings") or []:
+        source = str(item.get("Source") or "").strip()
+        value = str(item.get("Value") or "").strip()
+        if source and value and source.lower() != "internet movie database":
+            ratings.append({"source": source, "value": value})
+    metascore = (payload.get("Metascore") or "").strip()
+    if metascore and metascore != "N/A" and not any(rating["source"] == "Metacritic" for rating in ratings):
+        ratings.append({"source": "Metacritic", "value": f"{metascore}/100"})
+
+    deduped = []
+    seen_sources = set()
+    for rating in ratings:
+        key = rating["source"].lower()
+        if key in seen_sources:
+            continue
+        seen_sources.add(key)
+        deduped.append(rating)
+
+    result = {
+        "ratings": deduped[:4],
+        "imdbId": (payload.get("imdbID") or imdb_id or "").strip(),
+        "ratingUpdatedAt": utc_now(),
+        "externalUrl": f"https://www.imdb.com/title/{payload.get('imdbID')}/" if payload.get("imdbID") else "",
+    }
+    cache_store(OMDB_CACHE, cache_key, result)
+    return result
+
+
+def normalize_search_text(value):
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def proxied_image_url(image_url):
+    if not image_url:
+        return None
+    return f"/api/image?url={quote(image_url, safe='')}"
+
+
+def metadata_result_score(query, result):
+    normalized_query = normalize_search_text(query)
+    normalized_title = normalize_search_text(result.get("title"))
+    normalized_summary = normalize_search_text(result.get("summary"))
+    if not normalized_query or not normalized_title:
+        return 0
+
+    score = 0
+    query_tokens = normalized_query.split()
+    title_tokens = normalized_title.split()
+
+    if normalized_title == normalized_query:
+        score += 1000
+    if normalized_title.startswith(normalized_query):
+        score += 700
+        score += max(0, 180 - max(0, len(normalized_title) - len(normalized_query)) * 10)
+    if normalized_query in normalized_title:
+        score += 520
+    if query_tokens and all(token in title_tokens for token in query_tokens):
+        score += 360
+    if query_tokens and all(any(word.startswith(token) for word in title_tokens) for token in query_tokens):
+        score += 280
+
+    for token in query_tokens:
+        if token in title_tokens:
+            score += 40
+        elif token and token in normalized_title:
+            score += 24
+        if token and token in normalized_summary:
+            score += 6
+
+    score -= max(0, len(title_tokens) - len(query_tokens)) * 8
+
+    score += int(float(result.get("_sourceScore") or 0) * 100)
+
+    year = parse_year(result.get("year"))
+    if year:
+        score += max(0, 12 - min(abs(datetime.now(timezone.utc).year - year), 12))
+
+    return score
+
+
+def metadata_result_match_tier(query, result):
+    normalized_query = normalize_search_text(query)
+    normalized_title = normalize_search_text(result.get("title"))
+    if not normalized_query or not normalized_title:
+        return 0
+
+    query_tokens = normalized_query.split()
+    title_tokens = normalized_title.split()
+
+    if normalized_title == normalized_query:
+        return 5
+    if normalized_title.startswith(normalized_query):
+        return 4
+    if query_tokens and all(token in title_tokens for token in query_tokens):
+        return 3
+    if normalized_query in normalized_title:
+        return 2
+    return 1
+
+
+def dedupe_and_rank_metadata_results(query, results):
+    ranked = []
+    seen = {}
+    for result in results:
+        item = {**result}
+        item["_score"] = metadata_result_score(query, item)
+        item["_matchTier"] = metadata_result_match_tier(query, item)
+        item["_sortYear"] = parse_year(item.get("year")) or 0
+        key = (
+            item.get("kind") or "",
+            normalize_search_text(item.get("title")),
+            parse_year(item.get("year")) or "",
+        )
+        existing = seen.get(key)
+        if existing is None or item["_score"] > ranked[existing]["_score"]:
+            if existing is None:
+                seen[key] = len(ranked)
+                ranked.append(item)
+            else:
+                ranked[existing] = item
+
+    ranked.sort(
+        key=lambda item: (
+            -item.get("_matchTier", 0),
+            -item.get("_score", 0),
+            -item.get("_sortYear", 0),
+            normalize_search_text(item.get("title")),
+        )
+    )
+    return [
+        {key: value for key, value in item.items() if not key.startswith("_")}
+        for item in ranked
+    ]
+
+
+def wikidata_search_item_score(query, item):
+    candidate = {
+        "title": item.get("label"),
+        "summary": item.get("description") or "",
+        "_sourceScore": 0,
+    }
+    return metadata_result_score(query, candidate)
 
 
 def parse_progress_percent(observation):
@@ -1347,6 +1589,11 @@ def build_tautulli_observation(payload):
 
 
 def fetch_tvmaze_results(query):
+    cache_key = ("tvmaze", normalize_search_text(query))
+    cached = cache_lookup(SEARCH_CACHE, cache_key, 30 * 60)
+    if cached is not None:
+        return cached
+
     response = requests.get(
         "https://api.tvmaze.com/search/shows",
         params={"q": query},
@@ -1358,6 +1605,11 @@ def fetch_tvmaze_results(query):
     results = []
     for item in payload[:8]:
         show = item.get("show") or {}
+        average_rating = ((show.get("rating") or {}).get("average"))
+        imdb_id = str(((show.get("externals") or {}).get("imdb") or "")).strip()
+        ratings = []
+        if average_rating not in {None, ""}:
+            ratings.append({"source": "TVMaze", "value": f"{average_rating}/10"})
         results.append(
             {
                 "id": f"tvmaze:{show.get('id')}",
@@ -1366,17 +1618,27 @@ def fetch_tvmaze_results(query):
                 "year": parse_year(show.get("premiered")),
                 "summary": strip_html(show.get("summary")),
                 "genres": show.get("genres") or [],
-                "image": (show.get("image") or {}).get("medium") or (show.get("image") or {}).get("original"),
+                "image": proxied_image_url((show.get("image") or {}).get("original") or (show.get("image") or {}).get("medium")),
                 "externalUrl": show.get("url"),
                 "platformHint": (show.get("webChannel") or {}).get("name") or (show.get("network") or {}).get("name"),
                 "currentUnit": "S1 E1",
                 "source": "tvmaze",
+                "sourceId": f"tvmaze:{show.get('id')}",
+                "ratings": ratings,
+                "imdbId": imdb_id,
+                "_sourceScore": item.get("score") or 0,
             }
         )
+    cache_store(SEARCH_CACHE, cache_key, results, max_items=128)
     return results
 
 
 def fetch_movie_results(query):
+    cache_key = ("wikidata", normalize_search_text(query))
+    cached = cache_lookup(SEARCH_CACHE, cache_key, 30 * 60)
+    if cached is not None:
+        return cached
+
     response = requests.get(
         "https://www.wikidata.org/w/api.php",
         params={
@@ -1385,7 +1647,7 @@ def fetch_movie_results(query):
             "language": "en",
             "format": "json",
             "type": "item",
-            "limit": 10,
+            "limit": 20,
         },
         headers=HTTP_HEADERS,
         timeout=12,
@@ -1400,8 +1662,10 @@ def fetch_movie_results(query):
         or "television film" in (item.get("description") or "").lower()
     ]
     if not filtered:
-        filtered = search_results[:6]
-    ids = [item.get("id") for item in filtered[:6] if item.get("id")]
+        filtered = search_results[:10]
+    filtered.sort(key=lambda item: wikidata_search_item_score(query, item), reverse=True)
+    shortlisted = filtered[:8]
+    ids = [item.get("id") for item in shortlisted if item.get("id")]
     details = {}
     if ids:
         detail_response = requests.get(
@@ -1420,7 +1684,7 @@ def fetch_movie_results(query):
         details = detail_response.json().get("entities", {})
 
     results = []
-    for item in filtered[:6]:
+    for item in shortlisted:
         entity = details.get(item.get("id"), {})
         image_name = claim_string(entity, "P18")
         results.append(
@@ -1431,14 +1695,73 @@ def fetch_movie_results(query):
                 "year": parse_year(claim_time(entity, "P577")),
                 "summary": item.get("description") or entity_description(entity) or "Film metadata from Wikidata.",
                 "genres": [],
-                "image": f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(image_name)}" if image_name else None,
+                "image": proxied_image_url(f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(image_name)}") if image_name else None,
                 "externalUrl": item.get("concepturi"),
                 "platformHint": None,
                 "currentUnit": "Movie",
                 "source": "wikidata",
+                "sourceId": f"wikidata:{item.get('id')}",
+                "_sourceScore": 0,
             }
         )
+    cache_store(SEARCH_CACHE, cache_key, results, max_items=128)
     return results
+
+
+def fetch_tvmaze_episode_options(source_id):
+    if not source_id or not str(source_id).startswith("tvmaze:"):
+        return {"episodes": [], "show": {}}
+
+    cache_key = ("episodes", source_id)
+    cached = cache_lookup(EPISODE_CACHE, cache_key, 24 * 60 * 60)
+    if cached is not None:
+        return cached
+
+    show_id = str(source_id).split(":", 1)[1]
+    response = requests.get(
+        f"https://api.tvmaze.com/shows/{show_id}",
+        params={"embed": "episodes"},
+        headers=HTTP_HEADERS,
+        timeout=12,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    embedded = (payload.get("_embedded") or {}).get("episodes") or []
+    episodes = []
+    for item in embedded:
+        season = parse_int(item.get("season"), 0)
+        number = parse_int(item.get("number"), 0)
+        if season <= 0 or number <= 0:
+            continue
+        label = f"S{season} E{number}"
+        title = (item.get("name") or "").strip()
+        episodes.append(
+            {
+                "value": label,
+                "label": f"{label} - {title}" if title else label,
+                "season": season,
+                "number": number,
+                "name": title,
+                "airdate": item.get("airdate") or "",
+                "airstamp": item.get("airstamp") or "",
+                "runtime": parse_int(item.get("runtime"), 0),
+                "summary": strip_html(item.get("summary")) if item.get("summary") else "",
+                "available": bool(parse_iso_timestamp(item.get("airstamp") or item.get("airdate")) and parse_iso_timestamp(item.get("airstamp") or item.get("airdate")) <= datetime.now(timezone.utc)),
+            }
+        )
+
+    show_payload = {
+        "title": payload.get("name") or "",
+        "summary": strip_html(payload.get("summary")) if payload.get("summary") else "",
+        "image": proxied_image_url((payload.get("image") or {}).get("original") or (payload.get("image") or {}).get("medium")),
+        "externalUrl": payload.get("url") or "",
+        "imdbId": str(((payload.get("externals") or {}).get("imdb") or "")).strip(),
+        "ratings": [{"source": "TVMaze", "value": f"{((payload.get('rating') or {}).get('average'))}/10"}] if ((payload.get("rating") or {}).get("average")) not in {None, ""} else [],
+    }
+
+    result = {"episodes": episodes, "show": show_payload}
+    cache_store(EPISODE_CACHE, cache_key, result, max_items=128)
+    return result
 
 
 def entity_description(entity):
@@ -1528,6 +1851,8 @@ def api_bootstrap():
             "schemaVersion": SCHEMA_VERSION,
             "companionReady": True,
             "storageBackend": get_db().backend,
+            "ratingsReady": ratings_provider_configured(),
+            "ratingsProvider": "omdb" if ratings_provider_configured() else "",
         },
         "connectors": CONNECTOR_DEFINITIONS,
         "tokens": [],
@@ -1749,7 +2074,70 @@ def api_metadata_search():
     except requests.RequestException as error:
         return jsonify({"error": f"Metadata search failed: {error}"}), 502
 
-    return jsonify({"results": results[:12]})
+    ranked = dedupe_and_rank_metadata_results(query, results)
+    return jsonify({"results": ranked[:12]})
+
+
+@app.route("/api/metadata/episodes")
+@login_required
+def api_metadata_episodes():
+    source_id = (request.args.get("sourceId") or "").strip()
+    if not source_id:
+        return jsonify({"episodes": []})
+
+    try:
+        payload = fetch_tvmaze_episode_options(source_id)
+    except requests.RequestException as error:
+        return jsonify({"error": f"Episode lookup failed: {error}"}), 502
+
+    return jsonify(payload)
+
+
+@app.route("/api/image")
+def api_image_proxy():
+    image_url = (request.args.get("url") or "").strip()
+    if not image_url:
+        abort(400)
+
+    parsed = urlparse(image_url)
+    if parsed.scheme not in {"http", "https"}:
+        abort(400)
+    if not parsed.netloc or parsed.hostname not in ALLOWED_REMOTE_IMAGE_HOSTS:
+        abort(403)
+
+    response = requests.get(image_url, headers=HTTP_HEADERS, timeout=12)
+    response.raise_for_status()
+    content_type = response.headers.get("Content-Type", "")
+    if not content_type.startswith("image/"):
+        abort(415)
+
+    proxied = app.response_class(response.content, mimetype=content_type)
+    proxied.headers["Cache-Control"] = "public, max-age=86400"
+    return proxied
+
+
+@app.route("/api/ratings/lookup", methods=["POST"])
+@login_required
+def api_ratings_lookup():
+    if not ratings_provider_configured():
+        return jsonify({"ratings": [], "imdbId": "", "ratingUpdatedAt": None, "externalUrl": "", "configured": False})
+
+    payload = request.get_json(silent=True) or {}
+    title = (payload.get("title") or "").strip()
+    if not title and not (payload.get("imdbId") or "").strip():
+        return jsonify({"error": "Title or IMDb id is required for rating lookup."}), 400
+
+    try:
+        result = fetch_omdb_ratings(
+            title=title,
+            year=parse_year(payload.get("year")),
+            kind=(payload.get("kind") or "").strip().lower(),
+            imdb_id=(payload.get("imdbId") or "").strip() or None,
+        )
+    except requests.RequestException as error:
+        return jsonify({"error": f"Ratings lookup failed: {error}"}), 502
+
+    return jsonify({**result, "configured": True})
 
 
 @app.route("/api/tokens", methods=["GET"])

@@ -153,6 +153,7 @@ export function createTitleFromMetadata(result, platformId = "netflix") {
   const now = new Date().toISOString();
   return {
     id: createId("title"),
+    sourceId: inferSourceId(result),
     title: result.title || "Untitled",
     kind: result.kind === "movie" ? "movie" : "show",
     year: Number.isFinite(result.year) ? result.year : new Date().getFullYear(),
@@ -166,13 +167,19 @@ export function createTitleFromMetadata(result, platformId = "netflix") {
     favorite: false,
     image: result.image || "",
     externalUrl: result.externalUrl || "",
-    source: result.source || "manual"
+    source: result.source || "manual",
+    ratings: normalizeRatings(result.ratings),
+    ratingUpdatedAt: isValidDate(result.ratingUpdatedAt) ? result.ratingUpdatedAt : null,
+    imdbId: result.imdbId || "",
+    userRating: coerceUserRating(result.userRating),
+    lastCompletedUnit: String(result.lastCompletedUnit || "").trim()
   };
 }
 
 function normalizeTitles(titles) {
   return titles.map((title) => ({
     id: title.id || createId("title"),
+    sourceId: inferSourceId(title),
     title: title.title || "Untitled",
     kind: title.kind === "movie" ? "movie" : "show",
     year: Number.isFinite(title.year) ? title.year : new Date().getFullYear(),
@@ -186,7 +193,12 @@ function normalizeTitles(titles) {
     favorite: Boolean(title.favorite),
     image: title.image || "",
     externalUrl: title.externalUrl || "",
-    source: title.source || "manual"
+    source: title.source || "manual",
+    ratings: normalizeRatings(title.ratings),
+    ratingUpdatedAt: isValidDate(title.ratingUpdatedAt) ? title.ratingUpdatedAt : null,
+    imdbId: title.imdbId || "",
+    userRating: coerceUserRating(title.userRating),
+    lastCompletedUnit: String(title.lastCompletedUnit || "").trim()
   }));
 }
 
@@ -203,6 +215,8 @@ function normalizeSessions(sessions) {
       sourceType: ["auto", "manual", "import", "linked"].includes(session.sourceType) ? session.sourceType : "manual",
       sourceLabel: session.sourceLabel || "Tracked",
       device: session.device || "Unknown device",
+      currentUnit: session.currentUnit || "",
+      eventType: session.eventType || "",
       summary: session.summary || "Watch session tracked."
     }))
     .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime());
@@ -214,6 +228,50 @@ function clampNumber(value, min, max) {
     return min;
   }
   return Math.min(max, Math.max(min, number));
+}
+
+function normalizeRatings(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((rating) => ({
+      source: String(rating?.source || "").trim(),
+      value: String(rating?.value || "").trim()
+    }))
+    .filter((rating) => rating.source && rating.value)
+    .slice(0, 4);
+}
+
+function coerceUserRating(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return Math.min(10, Math.max(0, Math.round(numeric * 10) / 10));
+}
+
+function inferSourceId(value) {
+  const explicit = String(value?.sourceId || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const fallbackId = String(value?.id || "").trim();
+  if (fallbackId.startsWith("tvmaze:") || fallbackId.startsWith("wikidata:")) {
+    return fallbackId;
+  }
+
+  const externalUrl = String(value?.externalUrl || "").trim();
+  const tvmazeMatch = /tvmaze\.com\/shows\/(\d+)/i.exec(externalUrl);
+  if (tvmazeMatch) {
+    return `tvmaze:${tvmazeMatch[1]}`;
+  }
+
+  return "";
 }
 
 function isValidDate(value) {

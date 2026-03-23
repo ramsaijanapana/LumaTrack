@@ -10,7 +10,9 @@ Watchnest is now a server-backed watch tracker instead of a browser-only prototy
 - TV shows: TVMaze
 - Movies: Wikidata-backed lookup
 - Title add/edit/delete flows
-- Manual progress logging and unified activity timeline
+- Manual progress logging plus manual watched-history entry
+- Theme switching across the signed-in app
+- Optional ratings enrichment on saved titles via OMDb
 - Browser auto-capture for Netflix, Prime Video, Disney+, Max, Apple TV+, and Plex web tabs
 - Plex webhook and Tautulli webhook ingest routes
 - Token-based manual fallback plus a loadable browser extension popup
@@ -137,8 +139,15 @@ Setup:
 6. Grant access to your Watchnest origin when the extension asks.
 7. Open a supported playback page. The extension will post progress automatically in the background.
 8. Use `Send manually` in the popup when a site is unsupported or detection needs correction.
+9. If the tab was already open before you loaded or updated the extension, use the popup once or hit `Refresh` so the companion injects into that existing tab too.
 
 Auto-capture posts to `POST /api/ingest/observation` with absolute progress so repeated updates do not keep inflating the same title.
+
+## Themes and ratings
+
+- Theme switching is built into the signed-in app and is stored with the user profile state.
+- Ratings enrichment is optional and uses `OMDB_API_KEY`.
+- When `OMDB_API_KEY` is present, Watchnest can attach IMDb, Rotten Tomatoes, and Metacritic ratings to saved titles.
 
 ## Plex and Tautulli
 

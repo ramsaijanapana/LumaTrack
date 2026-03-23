@@ -81,28 +81,36 @@ export function createAutomaticSession(state, connectorId) {
 }
 
 export function createManualSession(title, options = {}) {
+  const hasExplicitProgressAfter = Number.isFinite(options.progressAfter);
   const progressDelta = Number.isFinite(options.progressDelta)
     ? options.progressDelta
     : title.kind === "movie"
       ? 18
       : 16;
-  const progressAfter = Math.min(100, title.progress + progressDelta);
+  const progressAfter = hasExplicitProgressAfter
+    ? Math.max(title.progress, Math.min(100, Number(options.progressAfter)))
+    : Math.min(100, title.progress + progressDelta);
 
   return {
     id: createId("session"),
     titleId: title.id,
     platformId: title.platformId,
-    startedAt: new Date().toISOString(),
+    startedAt: options.startedAt || new Date().toISOString(),
     durationMin: options.durationMin || (title.kind === "movie" ? 48 : 34),
     progressBefore: title.progress,
     progressAfter,
     sourceType: options.sourceType || "manual",
     sourceLabel: options.sourceLabel || "Manual check-in",
     device: options.device || "This device",
+    currentUnit: options.currentUnit || title.currentUnit,
+    eventType: options.eventType || "manual",
     summary:
-      progressAfter >= 100
-        ? `${title.title} was marked complete from inside Watchnest.`
-        : `${title.title} advanced with a manual progress check-in.`
+      options.summary
+      || (
+        progressAfter >= 100
+          ? `${title.title} was marked complete from inside Watchnest.`
+          : `${title.title} advanced with a manual progress check-in.`
+      )
   };
 }
 
@@ -114,10 +122,14 @@ export function applySession(state, session) {
   }
 
   title.progress = session.progressAfter;
-  title.lastActivityAt = session.startedAt;
+  title.lastActivityAt = isNewerTimestamp(session.startedAt, title.lastActivityAt) ? session.startedAt : title.lastActivityAt;
   title.status = session.progressAfter >= 100 ? "completed" : "watching";
 
-  if (title.kind === "show" && title.status !== "completed") {
+  if (title.status === "completed") {
+    title.currentUnit = "Completed";
+  } else if (session.currentUnit) {
+    title.currentUnit = session.currentUnit;
+  } else if (title.kind === "show") {
     title.currentUnit = bumpEpisodeLabel(title.currentUnit);
   }
 
@@ -127,7 +139,7 @@ export function applySession(state, session) {
 
   const connector = nextState.connectors.find((item) => item.id === session.platformId);
   if (connector) {
-    connector.lastSeenAt = session.startedAt;
+    connector.lastSeenAt = isNewerTimestamp(session.startedAt, connector.lastSeenAt) ? session.startedAt : connector.lastSeenAt;
     connector.health = "live";
     if (connector.status !== "paused") {
       connector.status = "connected";
@@ -193,4 +205,16 @@ function createId(prefix) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function isNewerTimestamp(left, right) {
+  const leftValue = new Date(left).getTime();
+  const rightValue = new Date(right).getTime();
+  if (Number.isNaN(leftValue)) {
+    return false;
+  }
+  if (Number.isNaN(rightValue)) {
+    return true;
+  }
+  return leftValue >= rightValue;
 }

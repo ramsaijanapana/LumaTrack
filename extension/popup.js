@@ -32,6 +32,7 @@ async function initialize() {
   baseUrlInput.value = stored.baseUrl;
   tokenInput.value = stored.token;
   autoCaptureInput.checked = Boolean(stored.autoCaptureEnabled);
+  await chrome.runtime.sendMessage({ type: "watchnest:refresh-auto-capture" }).catch(() => null);
   await hydrateFromActiveTab();
   await refreshRuntimeStatus();
 }
@@ -52,6 +53,7 @@ async function saveSettings(event) {
       token,
       autoCaptureEnabled: autoCaptureInput.checked
     });
+    await chrome.runtime.sendMessage({ type: "watchnest:refresh-auto-capture" }).catch(() => null);
     setStatus(autoCaptureInput.checked ? "Connection saved. Auto-capture armed." : "Connection saved. Auto-capture paused.", "success");
     await refreshRuntimeStatus();
   } catch (error) {
@@ -93,6 +95,7 @@ async function hydrateFromActiveTab() {
 async function refreshRuntimeStatus() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await chrome.runtime.sendMessage({ type: "watchnest:refresh-auto-capture" }).catch(() => null);
     const status = await chrome.runtime.sendMessage({
       type: "watchnest:get-status",
       tabUrl: tab?.url || ""
@@ -171,10 +174,11 @@ function formatRuntimeStatus(status) {
   if (!status.autoCaptureEnabled) {
     return "Auto-capture is configured but paused.";
   }
+  const tabCount = status.supportedTabCount ? ` ${status.supportedTabCount} supported tab${status.supportedTabCount === 1 ? "" : "s"} open.` : "";
   if (status.supportedService?.label) {
-    return `${status.supportedService.label} tab detected. Auto-capture is armed.`;
+    return `${status.supportedService.label} tab detected. Auto-capture is armed.${tabCount}`;
   }
-  return "Auto-capture is armed for supported services. Use manual fallback elsewhere.";
+  return `Auto-capture is armed for supported services.${tabCount} Use manual fallback elsewhere.`;
 }
 
 function formatLastDelivery(lastDelivery) {

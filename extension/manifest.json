@@ -3,7 +3,7 @@
   "name": "Watchnest Companion",
   "version": "0.2.0",
   "description": "Auto-capture supported OTT playback and fall back to manual capture when needed.",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "action": {
     "default_title": "Watchnest Companion",

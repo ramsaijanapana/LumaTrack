@@ -3,6 +3,17 @@ const DEFAULT_SETTINGS = {
   token: "",
   autoCaptureEnabled: true
 };
+const SUPPORTED_CAPTURE_PATTERNS = [
+  "https://*.netflix.com/*",
+  "https://*.primevideo.com/*",
+  "https://*.amazon.com/*",
+  "https://*.disneyplus.com/*",
+  "https://*.max.com/*",
+  "https://*.hbomax.com/*",
+  "https://tv.apple.com/*",
+  "https://*.plex.tv/*",
+  "https://app.plex.tv/*"
+];
 
 const DELIVERY_STATE = new Map();
 const PLATFORM_LABELS = {
@@ -20,6 +31,28 @@ chrome.runtime.onInstalled.addListener(async () => {
     ...DEFAULT_SETTINGS,
     ...stored
   });
+  await refreshSupportedTabs();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void refreshSupportedTabs();
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && tab?.url) {
+    void ensureAutoCaptureInjected(tabId, tab.url);
+  }
+});
+
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab?.url) {
+      await ensureAutoCaptureInjected(tabId, tab.url);
+    }
+  } catch (_error) {
+    // Ignore tabs that disappear during activation.
+  }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -51,6 +84,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           error: error.message || "Status lookup failed."
         });
       });
+    return true;
+  }
+
+  if (message?.type === "watchnest:refresh-auto-capture") {
+    refreshSupportedTabs()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || "Refresh failed." }));
     return true;
   }
 
@@ -137,6 +177,7 @@ async function getRuntimeStatus(tabUrl) {
     ? await chrome.permissions.contains({ origins: [originPattern] })
     : false;
   const { lastDelivery = null } = await chrome.storage.local.get({ lastDelivery: null });
+  const supportedTabs = await chrome.tabs.query({ url: SUPPORTED_CAPTURE_PATTERNS });
 
   return {
     ok: true,
@@ -144,8 +185,55 @@ async function getRuntimeStatus(tabUrl) {
     configured: Boolean(baseUrl && settings.token),
     hasPermission,
     supportedService: inferPlatformFromUrl(tabUrl),
-    lastDelivery
+    lastDelivery,
+    supportedTabCount: supportedTabs.length
   };
+}
+
+async function refreshSupportedTabs() {
+  const tabs = await chrome.tabs.query({ url: SUPPORTED_CAPTURE_PATTERNS });
+  let injected = 0;
+  for (const tab of tabs) {
+    if (!tab.id || !tab.url) {
+      continue;
+    }
+    const didInject = await ensureAutoCaptureInjected(tab.id, tab.url);
+    if (didInject) {
+      injected += 1;
+    }
+  }
+  return {
+    supportedTabCount: tabs.length,
+    injectedTabs: injected
+  };
+}
+
+async function ensureAutoCaptureInjected(tabId, url) {
+  if (!inferPlatformFromUrl(url)) {
+    return false;
+  }
+
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => Boolean(window.__watchnestAutoCaptureReady)
+    });
+    if (result) {
+      return false;
+    }
+  } catch (_error) {
+    // Fall through and try to inject.
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["autocapture.js"]
+    });
+    return true;
+  } catch (_error) {
+    return false;
+  }
 }
 
 function normalizeObservation(payload, tabUrl) {
