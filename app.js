@@ -1237,25 +1237,16 @@ function renderSetupTab(linkedStatus, fileSyncAvailable) {
       <section class="panel section-panel" data-section="setup">
         <div class="panel-head">
           <div>
-            <span class="eyebrow">Connectors</span>
-            <h2>Playback inputs</h2>
-            <p>Optional browser, Plex, and Tautulli ingestion.</p>
+            <span class="eyebrow">Watchnest</span>
+            <h2>Quietly handled.</h2>
+            <p>Everything important is already part of the main app flow. No technical setup checklist needed here.</p>
           </div>
         </div>
-        <div class="connector-grid">
-          ${state.connectors.map((connector) => renderConnectorCard(connector)).join("")}
+        <div class="support-list">
+          ${renderSupportCard("Automatic", "Playback tracking", "When supported, your library updates quietly in the background and keeps the next episode ready.")}
+          ${renderSupportCard("Portable", "Backup and restore", "Export a snapshot or link a local file when you want a backup outside your account.")}
+          ${renderSupportCard("Private", "Account storage", "Your watch history, ratings, and progress stay attached to your account by default.")}
         </div>
-      </section>
-
-      <section class="panel section-panel" data-section="tokens">
-        <div class="panel-head">
-          <div>
-            <span class="eyebrow">Tokens</span>
-            <h2>Companion tokens</h2>
-            <p>Create a token only if you want browser capture or webhook setup.</p>
-          </div>
-        </div>
-        ${renderTokensPanel()}
       </section>
     </section>
   `;
