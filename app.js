@@ -346,7 +346,27 @@ function handleChange(event) {
         : (getConnectorDefinition(event.target.value)?.name || ui.editor.serviceLabel || "");
     }
     if (field === "kind") {
-      ui.editor.currentUnit = event.target.value === "movie" ? "Movie" : (ui.editor.currentUnit || "S1 E1");
+      if (event.target.value === "movie") {
+        ui.editor.currentUnit = "Movie";
+        if (ui.editor.platformId === "books") {
+          ui.editor.platformId = "all";
+          if (ui.editor.serviceLabel === "Books") {
+            ui.editor.serviceLabel = "";
+          }
+        }
+      } else if (event.target.value === "book") {
+        ui.editor.currentUnit = ui.editor.currentUnit && ui.editor.currentUnit !== "Movie" ? ui.editor.currentUnit : "Chapter 1";
+        ui.editor.platformId = "books";
+        ui.editor.serviceLabel = ui.editor.serviceLabel || "Books";
+      } else {
+        ui.editor.currentUnit = ui.editor.currentUnit && ui.editor.currentUnit !== "Movie" ? ui.editor.currentUnit : "S1 E1";
+        if (ui.editor.platformId === "books") {
+          ui.editor.platformId = "all";
+          if (ui.editor.serviceLabel === "Books") {
+            ui.editor.serviceLabel = "";
+          }
+        }
+      }
       render({ domState: captureDomState(event.target) });
       if (ui.editor.kind === "show" && ui.editor.sourceId) {
         void ensureEpisodeOptions(ui.editor.sourceId);
@@ -659,6 +679,10 @@ async function setTheme(themeId) {
 }
 
 async function maybePopulateRatings(payload, { force = false } = {}) {
+  if (payload.kind === "book") {
+    payload.ratings = Array.isArray(payload.ratings) ? payload.ratings : [];
+    return payload;
+  }
   if (!appConfig.ratingsReady) {
     return payload;
   }
@@ -798,7 +822,7 @@ async function cycleTitleStatus(titleId) {
 
   if (nextStatus === "queued") {
     title.progress = 0;
-    title.currentUnit = title.kind === "movie" ? "Movie" : "S1 E1";
+    title.currentUnit = title.kind === "movie" ? "Movie" : title.kind === "book" ? "Chapter 1" : "S1 E1";
   }
 
   if (nextStatus === "watching" && title.progress === 0) {
@@ -807,7 +831,7 @@ async function cycleTitleStatus(titleId) {
 
   if (nextStatus === "completed") {
     title.progress = 100;
-    title.currentUnit = "Completed";
+    title.currentUnit = title.kind === "movie" ? "Completed" : title.kind === "book" ? "Finished" : "Completed";
   }
 
   await persistAndRender({
@@ -1087,14 +1111,15 @@ function renderWatchlistTab(filteredTitles, recentSessions, stats, editedTitle) 
     ${renderTrackingOverview(stats)}
     <section class="dashboard-grid">
       <section class="panel section-panel" data-section="library">
-        <div class="panel-head">
+        <div class="panel-head compact-head">
           <div>
             <span class="eyebrow">Watchlist</span>
-            <h2>Keep moving forward.</h2>
-            <p>Poster-first cards, fast updates, and clear next-up guidance.</p>
+            <h2>Your library</h2>
           </div>
-          <div class="panel-actions library-tools-inline">
-            <input class="search-bar" data-filter-input="search" type="search" value="${escapeAttribute(state.filters.search)}" placeholder="Filter your library">
+        </div>
+        <div class="watchlist-toolbar">
+          <div class="watchlist-toolbar-row">
+            <input class="search-bar" data-filter-input="search" type="search" value="${escapeAttribute(state.filters.search)}" placeholder="Filter library">
             <select class="select-field" data-filter-select="platform" aria-label="Filter by platform">
               ${renderPlatformOptions(state.filters.platform)}
             </select>
@@ -1102,32 +1127,31 @@ function renderWatchlistTab(filteredTitles, recentSessions, stats, editedTitle) 
               <option value="all" ${state.filters.kind === "all" ? "selected" : ""}>All types</option>
               <option value="show" ${state.filters.kind === "show" ? "selected" : ""}>Shows</option>
               <option value="movie" ${state.filters.kind === "movie" ? "selected" : ""}>Movies</option>
+              <option value="book" ${state.filters.kind === "book" ? "selected" : ""}>Books</option>
             </select>
           </div>
-        </div>
-        <div class="filter-row" aria-label="Status filters">
-          ${["all", "watching", "queued", "paused", "completed"]
-            .map((filter) => `<button class="filter-chip ${state.filters.status === filter ? "active" : ""}" data-action="filter-status" data-value="${filter}">${labelFromStatus(filter)}</button>`)
-            .join("")}
+          <div class="filter-row compact-filters" aria-label="Status filters">
+            ${["all", "watching", "queued", "paused", "completed"]
+              .map((filter) => `<button class="filter-chip ${state.filters.status === filter ? "active" : ""}" data-action="filter-status" data-value="${filter}">${labelFromStatus(filter)}</button>`)
+              .join("")}
+          </div>
         </div>
 
         ${activeTitles.length ? `
-          <div class="section-subhead">
-            <h3>Watch next</h3>
-            <p>Quick actions move each title to the next episode automatically.</p>
+          <div class="section-subhead compact">
+            <h3>Next up <span class="section-count">${activeTitles.length}</span></h3>
           </div>
           <div class="library-rail">
             ${activeTitles.map(({ title }) => renderTitleCard(title)).join("")}
           </div>
         ` : renderEmptyState(
           "Nothing in progress yet.",
-          "Search on the right, add a title, and your next episode will appear here."
+          "Search on the right and add a title."
         )}
 
         ${comingSoonTitles.length ? `
-          <div class="section-subhead">
-            <h3>Coming soon</h3>
-            <p>Upcoming episodes and next seasons stay visible until release day.</p>
+          <div class="section-subhead compact">
+            <h3>Soon <span class="section-count">${comingSoonTitles.length}</span></h3>
           </div>
           <div class="library-rail">
             ${comingSoonTitles.map(({ title }) => renderTitleCard(title)).join("")}
@@ -1135,9 +1159,8 @@ function renderWatchlistTab(filteredTitles, recentSessions, stats, editedTitle) 
         ` : ""}
 
         ${completedTitles.length ? `
-          <div class="section-subhead">
-            <h3>Completed</h3>
-            <p>Finished titles stay compact, with ratings and source links intact.</p>
+          <div class="section-subhead compact">
+            <h3>Finished <span class="section-count">${Math.min(completedTitles.length, 12)}</span></h3>
           </div>
           <div class="library-rail completed">
             ${completedTitles.slice(0, 12).map(({ title }) => renderTitleCard(title)).join("")}
@@ -1147,28 +1170,16 @@ function renderWatchlistTab(filteredTitles, recentSessions, stats, editedTitle) 
 
       <aside class="stacked-panels">
         <section class="panel section-panel" data-section="search" id="library-tools">
-          <div class="panel-head">
+          <div class="panel-head compact-head">
             <div>
               <span class="eyebrow">Add titles</span>
-              <h2>Search on the side.</h2>
-              <p>Search is always available here. Manual add and watch updates stay one click away.</p>
+              <h2>Search</h2>
             </div>
           </div>
           ${renderSearchWorkspace(editedTitle, true)}
         </section>
 
-        <section class="panel section-panel" data-section="activity">
-          <div class="panel-head">
-            <div>
-              <span class="eyebrow">Recent</span>
-              <h2>Latest watch updates.</h2>
-              <p>Episode completions and manual check-ins only.</p>
-            </div>
-          </div>
-          <div class="timeline-list compact">
-            ${recentSessions.length ? recentSessions.map((session) => renderSessionCard(session)).join("") : renderEmptyState("No watch updates yet.", "Mark an episode watched and it will show up here.")}
-          </div>
-        </section>
+        ${renderQueuePanel(activeTitles, comingSoonTitles)}
       </aside>
     </section>
   `;
@@ -1258,7 +1269,7 @@ function renderSearchWorkspace(editedTitle, compact = false) {
       ${renderSearchPanel()}
       <div class="workspace-tabs action-nav">
         <button class="chip-button ${ui.selectedPanel === "editor" ? "primary" : ""}" data-action="panel" data-value="editor">Add manually</button>
-        <button class="chip-button ${ui.selectedPanel === "history" ? "primary" : ""}" data-action="panel" data-value="history">Mark watched</button>
+        <button class="chip-button ${ui.selectedPanel === "history" ? "primary" : ""}" data-action="panel" data-value="history">Update progress</button>
         ${ui.selectedPanel !== "search" ? `<button class="chip-button" data-action="panel" data-value="search">Close</button>` : ""}
       </div>
       ${ui.selectedPanel === "history"
@@ -1368,17 +1379,18 @@ function renderSearchPanelLegacy() {
     : ui.metadataResults.length
       ? ui.metadataResults.map((result) => renderMetadataResult(result)).join("")
       : trimmedQuery.length >= 2
-        ? renderEmptyState("No results yet.", "Try a different title, or switch between shows and movies.")
+        ? renderEmptyState("No results yet.", "Try a different title, or switch between shows, movies, and books.")
         : renderEmptyState("Start typing to search.", "Search updates as you type.");
   return `
     <div class="stack-form">
       <form class="stack-form" data-form="metadata-search">
         <div class="panel-actions">
-          <input class="search-bar" data-metadata-input="query" type="search" value="${escapeAttribute(ui.metadataQuery)}" placeholder="Search movies or shows" required>
+          <input class="search-bar" data-metadata-input="query" type="search" value="${escapeAttribute(ui.metadataQuery)}" placeholder="Search movies, shows, or books" required>
           <select class="select-field" data-metadata-select="kind" aria-label="Search type">
-            <option value="all" ${ui.metadataKind === "all" ? "selected" : ""}>Movies and shows</option>
+            <option value="all" ${ui.metadataKind === "all" ? "selected" : ""}>Movies, shows, books</option>
             <option value="show" ${ui.metadataKind === "show" ? "selected" : ""}>Shows only</option>
             <option value="movie" ${ui.metadataKind === "movie" ? "selected" : ""}>Movies only</option>
+            <option value="book" ${ui.metadataKind === "book" ? "selected" : ""}>Books only</option>
           </select>
           <button class="button" type="submit" ${ui.metadataBusy ? "disabled" : ""}>${ui.metadataBusy ? "Searching..." : "Search"}</button>
         </div>
@@ -1415,7 +1427,7 @@ function getMetadataSearchResultsMarkup() {
     return ui.metadataResults.map((result) => renderMetadataResult(result)).join("");
   }
   if (trimmedQuery.length >= 2) {
-    return renderEmptyState("No results yet.", "Try a different title, or switch between shows and movies.");
+    return renderEmptyState("No results yet.", "Try a different title, or switch between shows, movies, and books.");
   }
   return renderEmptyState("Start typing to search.", "Search updates as you type.");
 }
@@ -1449,11 +1461,12 @@ function renderSearchPanel() {
     <div class="stack-form" data-search-panel="metadata">
       <form class="stack-form" data-form="metadata-search">
         <div class="panel-actions">
-          <input class="search-bar" data-metadata-input="query" type="search" value="${escapeAttribute(ui.metadataQuery)}" placeholder="Search movies or shows" required>
+          <input class="search-bar" data-metadata-input="query" type="search" value="${escapeAttribute(ui.metadataQuery)}" placeholder="Search movies, shows, or books" required>
           <select class="select-field" data-metadata-select="kind" aria-label="Search type">
-            <option value="all" ${ui.metadataKind === "all" ? "selected" : ""}>Movies and shows</option>
+            <option value="all" ${ui.metadataKind === "all" ? "selected" : ""}>Movies, shows, books</option>
             <option value="show" ${ui.metadataKind === "show" ? "selected" : ""}>Shows only</option>
             <option value="movie" ${ui.metadataKind === "movie" ? "selected" : ""}>Movies only</option>
+            <option value="book" ${ui.metadataKind === "book" ? "selected" : ""}>Books only</option>
           </select>
           <button class="button" data-search-submit type="submit" ${ui.metadataBusy ? "disabled" : ""}>${ui.metadataBusy ? "Searching..." : "Search"}</button>
         </div>
@@ -1467,7 +1480,7 @@ function renderSearchPanel() {
   `;
 }
 
-function renderCurrentUnitControl({ kind, sourceId, value, inputMode, label = "Current unit", placeholder = "S1 E1 or Movie" }) {
+function renderCurrentUnitControl({ kind, sourceId, value, inputMode, label = "Current unit", placeholder = "S1 E1, Movie, or Chapter 1" }) {
   const episodeOptions = sourceId ? (episodeOptionsCache.get(sourceId) || []) : [];
   const loadingEpisodes = sourceId ? episodeOptionsPending.has(sourceId) : false;
   const fieldAttribute = inputMode === "session" ? "data-session-field" : "data-editor-field";
@@ -1502,6 +1515,17 @@ function renderCurrentUnitControl({ kind, sourceId, value, inputMode, label = "C
 
 function renderEditorPanel(editedTitle) {
   const titleLabel = ui.editor.mode === "edit" ? `Edit ${editedTitle?.title || "title"}` : "Add a title";
+  const runtimePlaceholder = ui.editor.kind === "movie" ? "120" : ui.editor.kind === "book" ? "35" : "42";
+  const currentUnitLabel = ui.editor.kind === "movie"
+    ? "Watch state"
+    : ui.editor.kind === "book"
+      ? "Reading progress"
+      : "Next episode to watch";
+  const currentUnitPlaceholder = ui.editor.kind === "movie"
+    ? "Movie"
+    : ui.editor.kind === "book"
+      ? "Chapter 1 or Finished"
+      : "S1 E1";
   return `
     <form class="stack-form" data-form="title-editor">
       <div class="panel-note">${escapeHtml(titleLabel)}</div>
@@ -1515,6 +1539,7 @@ function renderEditorPanel(editedTitle) {
           <select class="select-field" data-editor-field="kind">
             <option value="show" ${ui.editor.kind === "show" ? "selected" : ""}>Show</option>
             <option value="movie" ${ui.editor.kind === "movie" ? "selected" : ""}>Movie</option>
+            <option value="book" ${ui.editor.kind === "book" ? "selected" : ""}>Book</option>
           </select>
         </label>
         <label class="form-field">
@@ -1522,8 +1547,8 @@ function renderEditorPanel(editedTitle) {
           <input class="search-bar" data-editor-field="year" type="number" min="1888" max="2100" value="${escapeAttribute(String(ui.editor.year || ""))}">
         </label>
         <label class="form-field">
-          <span>Runtime (min)</span>
-          <input class="search-bar" data-editor-field="runtimeMin" type="number" min="1" max="600" value="${escapeAttribute(String(ui.editor.runtimeMin || ""))}" placeholder="${ui.editor.kind === "movie" ? "120" : "42"}">
+          <span>Tracked time (min)</span>
+          <input class="search-bar" data-editor-field="runtimeMin" type="number" min="1" max="600" value="${escapeAttribute(String(ui.editor.runtimeMin || ""))}" placeholder="${runtimePlaceholder}">
         </label>
         <label class="form-field">
           <span>Platform</span>
@@ -1548,8 +1573,8 @@ function renderEditorPanel(editedTitle) {
           sourceId: ui.editor.sourceId,
           value: ui.editor.currentUnit,
           inputMode: "editor",
-          label: ui.editor.kind === "movie" ? "Watch state" : "Next episode to watch",
-          placeholder: ui.editor.kind === "movie" ? "Movie" : "S1 E1"
+          label: currentUnitLabel,
+          placeholder: currentUnitPlaceholder
         })}
         <label class="form-field form-span">
           <span>Genres</span>
@@ -1565,7 +1590,7 @@ function renderEditorPanel(editedTitle) {
         <button class="button ghost" type="button" data-action="editor-cancel">Cancel</button>
         <button class="button ghost" type="button" data-action="editor-blank">Reset editor</button>
         ${ui.editor.mode === "edit" && ui.editor.titleId ? `<button class="button ghost" type="button" data-action="editor-delete" data-title-id="${escapeAttribute(ui.editor.titleId)}">Delete</button>` : ""}
-        ${ui.editor.mode === "edit" && appConfig.ratingsReady ? `<button class="button ghost" type="button" data-action="title-ratings-refresh" data-title-id="${escapeAttribute(ui.editor.titleId || "")}">Refresh ratings</button>` : ""}
+        ${ui.editor.mode === "edit" && appConfig.ratingsReady && ui.editor.kind !== "book" ? `<button class="button ghost" type="button" data-action="title-ratings-refresh" data-title-id="${escapeAttribute(ui.editor.titleId || "")}">Refresh ratings</button>` : ""}
       </div>
       ${renderRatingsPanel(ui.editor.ratings, ui.editor.ratingUpdatedAt, ui.editor.imdbId, false, normalizeUserRating(ui.editor.userRating))}
     </form>
@@ -1575,7 +1600,7 @@ function renderEditorPanel(editedTitle) {
 function renderSessionEntryPanel() {
   const availableTitles = getFilteredTitles().length ? getFilteredTitles() : state.titles;
   if (!availableTitles.length) {
-    return renderEmptyState("No titles to update yet.", "Add a title first, then mark an episode or movie watched.");
+    return renderEmptyState("No titles to update yet.", "Add a title first, then save a watch or reading update.");
   }
 
   const selectedTitle = lookupTitle(ui.sessionDraft.titleId) || availableTitles[0];
@@ -1583,10 +1608,24 @@ function renderSessionEntryPanel() {
     ? { ...ui.sessionDraft, titleId: selectedTitle.id, currentUnit: getSuggestedCompletedUnit(selectedTitle) }
     : ui.sessionDraft;
   ui.sessionDraft = draft;
+  const progressLabel = selectedTitle.kind === "movie"
+    ? "Mark as watched"
+    : selectedTitle.kind === "book"
+      ? "Reading progress"
+      : "Episode completed";
+  const progressPlaceholder = selectedTitle.kind === "movie"
+    ? "Movie"
+    : selectedTitle.kind === "book"
+      ? "Chapter 1 or Finished"
+      : "S1 E1";
+  const submitLabel = selectedTitle.kind === "book" ? "Save progress" : "Mark watched";
+  const helperCopy = selectedTitle.kind === "book"
+    ? "Pick the chapter, page, or reading milestone you reached."
+    : "Pick the episode or movie you finished. Watchnest will move the title forward for you.";
 
   return `
     <form class="stack-form" data-form="manual-session">
-      <div class="panel-note">Pick the episode or movie you finished. Watchnest will move the title forward for you.</div>
+      <div class="panel-note">${escapeHtml(helperCopy)}</div>
       <div class="form-grid">
         <label class="form-field form-span">
           <span>Title</span>
@@ -1607,8 +1646,8 @@ function renderSessionEntryPanel() {
           sourceId: selectedTitle.sourceId,
           value: draft.currentUnit,
           inputMode: "session",
-          label: selectedTitle.kind === "movie" ? "Mark as watched" : "Episode completed",
-          placeholder: selectedTitle.kind === "movie" ? "Movie" : "S1 E1"
+          label: progressLabel,
+          placeholder: progressPlaceholder
         })}
         <label class="form-field form-span">
           <span>Note</span>
@@ -1616,7 +1655,7 @@ function renderSessionEntryPanel() {
         </label>
       </div>
       <div class="panel-actions">
-        <button class="button" type="submit">Mark watched</button>
+        <button class="button" type="submit">${escapeHtml(submitLabel)}</button>
         <button class="button ghost" type="button" data-action="history-cancel">Cancel</button>
         <button class="button ghost" type="button" data-action="title-log-session" data-title-id="${selectedTitle.id}">Use next up</button>
       </div>
@@ -1695,7 +1734,7 @@ function renderMetadataResultLegacy(result) {
   return `
     <article class="result-card">
       <div class="result-media" style="${resultImage ? `background-image: linear-gradient(rgba(31,35,39,0.18), rgba(31,35,39,0.32)), url('${escapeAttribute(resultImage)}');` : ""}">
-        <span class="poster-platform">${escapeHtml(result.kind === "movie" ? "Movie" : "Show")}</span>
+        <span class="poster-platform">${escapeHtml(labelFromKind(result.kind))}</span>
       </div>
       <div class="card-body">
         <div class="card-top">
@@ -1747,7 +1786,7 @@ function renderTitleCardLegacy(title) {
         </div>
         <div class="chip-row">
           <span class="tag status-${title.status}">${escapeHtml(labelFromStatus(title.status))}</span>
-          <span class="tag">${escapeHtml(title.kind === "movie" ? "Movie" : "Series")}</span>
+          <span class="tag">${escapeHtml(title.kind === "movie" ? "Movie" : title.kind === "book" ? "Book" : "Series")}</span>
           ${title.genres.slice(0, 2).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}
         </div>
         ${renderRatingsPanel(title.ratings, title.ratingUpdatedAt, title.imdbId, true)}
@@ -1828,22 +1867,26 @@ function renderPosterImage(imageUrl, altText, className) {
 
 function renderMetadataResult(result) {
   const resultImage = proxyImageUrl(result.image);
-  const platformId = inferPlatformId(result.platformHint) || ui.editor.platformId || "all";
+  const platformId = inferPlatformId(result.platformHint) || ui.editor.platformId || (result.kind === "book" ? "books" : "all");
   const connector = getConnectorDefinition(platformId);
   const serviceLabel = connector?.shortName || result.platformHint || "Choose later";
+  const kindLabel = labelFromKind(result.kind);
+  const subtitle = result.kind === "book"
+    ? [result.year ? String(result.year) : "Year unknown", result.creatorLabel || "Author unknown"].join(" / ")
+    : `${result.year ? String(result.year) : "Year unknown"}${result.platformHint ? ` / ${result.platformHint}` : ""}`;
   return `
     <article class="result-card">
       <div class="result-media ${resultImage ? "has-image" : ""}" data-platform="${escapeAttribute(platformId)}">
         ${renderPosterImage(resultImage, `${result.title} poster`, "media-image")}
         <div class="media-scrim" aria-hidden="true"></div>
-        <span class="poster-platform">${escapeHtml(result.kind === "movie" ? "Movie" : "Show")}</span>
+        <span class="poster-platform">${escapeHtml(kindLabel)}</span>
         <button class="poster-quick-action subtle" type="button" data-action="quick-add-result" data-result-id="${escapeAttribute(result.id)}">Add</button>
       </div>
       <div class="card-body">
         <div class="card-top">
           <div>
             <h3>${escapeHtml(result.title)}</h3>
-            <p>${escapeHtml(result.year ? String(result.year) : "Year unknown")}${result.platformHint ? ` / ${escapeHtml(result.platformHint)}` : ""}</p>
+            <p>${escapeHtml(subtitle)}</p>
           </div>
         </div>
         <div class="chip-row">
@@ -1867,14 +1910,24 @@ function renderTitleCard(title) {
   const titleImage = proxyImageUrl(title.image);
   const watchState = getTitleWatchState(title);
   const yearLabel = title.year ? String(title.year) : "Now";
-  const availabilityLabel = watchState.comingSoon
-    ? `Coming ${watchState.nextAirLabel}${serviceLabel ? ` on ${serviceLabel}` : ""}`
-    : watchState.nextUnit
-      ? `Up next ${watchState.nextUnit}${serviceLabel ? ` on ${serviceLabel}` : ""}`
-      : watchState.completed
-        ? "All caught up"
-        : "Ready to start";
+  const metaLine = [yearLabel, serviceLabel].filter(Boolean).join(" · ");
+  const availabilityLabel = watchState.availabilityLabel
+    || (
+      watchState.comingSoon
+        ? `Coming ${watchState.nextAirLabel}${serviceLabel ? ` on ${serviceLabel}` : ""}`
+        : watchState.nextUnit
+          ? `Up next ${watchState.nextUnit}${serviceLabel ? ` on ${serviceLabel}` : ""}`
+          : watchState.completed
+            ? "All caught up"
+            : "Ready to start"
+    );
   const primaryAction = watchState.quickActionLabel;
+  const secondaryMeta = watchState.comingSoon
+    ? [watchState.lastCompletedLabel ? `Last ${watchState.lastCompletedLabel}` : "", watchState.metaCopy].filter(Boolean).join(" · ")
+    : watchState.lastCompletedLabel
+      ? `Last ${watchState.lastCompletedLabel}`
+      : watchState.metaCopy;
+  const compactGenres = title.genres.slice(0, 1);
 
   return `
     <article class="panel title-card compact">
@@ -1882,35 +1935,32 @@ function renderTitleCard(title) {
         ${renderPosterImage(titleImage, `${title.title} poster`, "poster-art")}
         <div class="poster-scrim" aria-hidden="true"></div>
         <span class="poster-platform">${escapeHtml(connector?.shortName || title.platformId)}</span>
-        <strong class="poster-title">${escapeHtml(title.title)}</strong>
-        <span class="poster-copy">${escapeHtml(yearLabel)}</span>
         ${primaryAction ? `<button class="poster-quick-action" type="button" data-action="title-mark-next" data-title-id="${title.id}" ${watchState.quickActionDisabled ? "disabled" : ""}>Done</button>` : ""}
       </div>
       <div class="card-body">
-        <div class="card-top">
-          <div>
-            <h3>${escapeHtml(title.title)}</h3>
-            <p>${escapeHtml(serviceLabel)} / ${escapeHtml(yearLabel)}</p>
+        <div class="card-top compact-top">
+          <div class="title-stack">
+            <h3 class="clamp-2">${escapeHtml(title.title)}</h3>
+            <p>${escapeHtml(metaLine)}</p>
           </div>
-          <div class="chip-row">
-            <button class="icon-button" data-action="title-favorite" data-title-id="${title.id}">${title.favorite ? "Pinned" : "Pin"}</button>
-            <button class="icon-button" data-action="editor-edit" data-title-id="${title.id}">Edit</button>
+          <div class="card-inline-actions">
+            <button class="icon-button subtle" data-action="title-favorite" data-title-id="${title.id}">${title.favorite ? "Pinned" : "Pin"}</button>
+            <button class="icon-button subtle" data-action="editor-edit" data-title-id="${title.id}">Edit</button>
           </div>
         </div>
-        <div class="chip-row">
+        <div class="chip-row compact-tags">
           <span class="tag status-${watchState.statusTone}">${escapeHtml(watchState.statusLabel)}</span>
           <span class="tag">${escapeHtml(watchState.kindLabel)}</span>
-          ${title.genres.slice(0, 2).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}
+          ${compactGenres.map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}
         </div>
         ${renderRatingsPanel(title.ratings, title.ratingUpdatedAt, title.imdbId, true, title.userRating)}
         <div class="watch-meta">
           <div class="watch-line"><strong>${escapeHtml(availabilityLabel)}</strong></div>
-          ${watchState.lastCompletedLabel ? `<div class="watch-line soft">Last watched ${escapeHtml(watchState.lastCompletedLabel)}</div>` : ""}
-          <div class="watch-line soft">${escapeHtml(watchState.metaCopy)}</div>
+          ${secondaryMeta ? `<div class="watch-line soft clamp-2">${escapeHtml(secondaryMeta)}</div>` : ""}
         </div>
-        <div class="card-actions">
-          ${title.kind === "show" ? `<button class="chip-button" data-action="title-choose-unit" data-title-id="${title.id}">Choose episode</button>` : `<button class="chip-button" data-action="title-choose-unit" data-title-id="${title.id}">Update</button>`}
-          ${title.externalUrl ? `<button class="chip-button" type="button" data-action="open-external" data-url="${escapeAttribute(title.externalUrl)}">Open title</button>` : ""}
+        <div class="card-actions compact-actions">
+          ${title.kind === "show" ? `<button class="chip-button compact-action" data-action="title-choose-unit" data-title-id="${title.id}">Choose</button>` : `<button class="chip-button compact-action" data-action="title-choose-unit" data-title-id="${title.id}">Update</button>`}
+          ${title.externalUrl ? `<button class="chip-button compact-action" type="button" data-action="open-external" data-url="${escapeAttribute(title.externalUrl)}">Open</button>` : ""}
         </div>
       </div>
     </article>
@@ -1959,6 +2009,102 @@ function renderSessionCard(session) {
           : title
             ? `<button class="chip-button compact-action" data-action="title-choose-unit" data-title-id="${title.id}">${title.kind === "show" ? "Choose episode" : "Update"}</button>`
             : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderQueuePanel(activeTitles, comingSoonTitles) {
+  const readyItems = activeTitles.slice(0, 5);
+  const soonItems = comingSoonTitles.slice(0, 5);
+
+  if (!readyItems.length && !soonItems.length) {
+    return `
+      <section class="panel section-panel" data-section="queue">
+        <div class="panel-head compact-head">
+          <div>
+            <span class="eyebrow">Queue</span>
+            <h2>Jump back in</h2>
+          </div>
+        </div>
+        ${renderEmptyState("Nothing queued yet.", "Add a title and it will land here.")}
+      </section>
+    `;
+  }
+
+  return `
+    <section class="panel section-panel" data-section="queue">
+      <div class="panel-head compact-head">
+        <div>
+          <span class="eyebrow">Queue</span>
+          <h2>Jump back in</h2>
+        </div>
+      </div>
+      ${readyItems.length ? `
+        <div class="queue-group">
+          <div class="queue-group-head">
+            <h3>Ready</h3>
+            <span class="micro-pill"><strong>${readyItems.length}</strong></span>
+          </div>
+          <div class="queue-list">
+            ${readyItems.map(({ title }) => renderQueueItem(title)).join("")}
+          </div>
+        </div>
+      ` : ""}
+      ${soonItems.length ? `
+        <div class="queue-group">
+          <div class="queue-group-head">
+            <h3>Soon</h3>
+            <span class="micro-pill"><strong>${soonItems.length}</strong></span>
+          </div>
+          <div class="queue-list">
+            ${soonItems.map(({ title }) => renderQueueItem(title)).join("")}
+          </div>
+        </div>
+      ` : ""}
+    </section>
+  `;
+}
+
+function renderQueueItem(title) {
+  const connector = getConnectorDefinition(title.platformId);
+  const serviceLabel = title.serviceLabel || connector?.name || "Service not set";
+  const titleImage = proxyImageUrl(title.image);
+  const watchState = getTitleWatchState(title);
+  const yearLabel = title.year ? String(title.year) : "Now";
+  const primaryLabel = watchState.quickActionLabel ? "Continue" : title.kind === "show" ? "Choose" : "Update";
+  const statusCopy = watchState.availabilityLabel
+    || (
+      watchState.comingSoon
+        ? `Coming ${watchState.nextAirLabel}${serviceLabel ? ` on ${serviceLabel}` : ""}`
+        : watchState.nextUnit
+          ? `${watchState.nextUnit} ready${serviceLabel ? ` on ${serviceLabel}` : ""}`
+          : watchState.completed
+            ? "All caught up"
+            : "Ready to start"
+    );
+
+  return `
+    <article class="queue-item">
+      <div class="queue-thumb ${titleImage ? "has-image" : ""}" data-platform="${escapeAttribute(title.platformId || "all")}">
+        ${renderPosterImage(titleImage, `${title.title} poster`, "media-image")}
+        <div class="media-scrim" aria-hidden="true"></div>
+        <span class="poster-platform">${escapeHtml(connector?.shortName || title.platformId || "WN")}</span>
+      </div>
+      <div class="queue-body">
+        <div class="queue-title-row">
+          <h3 class="clamp-2">${escapeHtml(title.title)}</h3>
+          ${title.favorite ? `<span class="mini-flag">Pinned</span>` : ""}
+        </div>
+        <div class="queue-meta">${escapeHtml([serviceLabel, yearLabel].filter(Boolean).join(" · "))}</div>
+        <div class="queue-copy">
+          <strong>${escapeHtml(statusCopy)}</strong>
+          ${watchState.lastCompletedLabel ? `<span>Last ${escapeHtml(watchState.lastCompletedLabel)}</span>` : ""}
+        </div>
+        <div class="queue-actions">
+          <button class="chip-button compact-action" data-action="${watchState.quickActionLabel ? "title-mark-next" : "title-choose-unit"}" data-title-id="${title.id}" ${watchState.quickActionLabel && watchState.quickActionDisabled ? "disabled" : ""}>${escapeHtml(primaryLabel)}</button>
+          ${title.externalUrl ? `<button class="chip-button compact-action" type="button" data-action="open-external" data-url="${escapeAttribute(title.externalUrl)}">Open</button>` : ""}
+        </div>
       </div>
     </article>
   `;
@@ -2065,6 +2211,10 @@ function getSuggestedCompletedUnit(title) {
     return "Movie";
   }
 
+  if (title.kind === "book") {
+    return title.currentUnit || title.lastCompletedUnit || "Chapter 1";
+  }
+
   const watchState = getTitleWatchState(title);
   if (watchState.comingSoon) {
     if (title.lastCompletedUnit) {
@@ -2090,6 +2240,7 @@ function getTitleWatchState(title) {
       kindLabel: "Show",
       statusLabel: "Queued",
       statusTone: "queued",
+      availabilityLabel: "",
       posterCopy: "",
       lastCompletedLabel: "",
       metaCopy: "",
@@ -2108,11 +2259,32 @@ function getTitleWatchState(title) {
       kindLabel: "Movie",
       statusLabel: completed ? "Completed" : title.status === "queued" ? "Queued" : "Ready",
       statusTone: completed ? "completed" : title.status === "watching" ? "watching" : "queued",
+      availabilityLabel: completed ? "All caught up" : "Ready to finish",
       posterCopy: completed ? "Completed" : "Movie night",
       lastCompletedLabel: completed ? "Movie" : "",
       metaCopy: `Last updated ${formatRelative(title.lastActivityAt)}`,
       quickActionLabel: completed ? "" : "Mark watched",
       quickActionDisabled: completed
+    };
+  }
+
+  if (title.kind === "book") {
+    const completed = title.status === "completed";
+    const nextUnit = completed ? "" : (title.currentUnit || title.lastCompletedUnit || "Chapter 1");
+    return {
+      completed,
+      comingSoon: false,
+      nextUnit,
+      nextAirLabel: "",
+      kindLabel: "Book",
+      statusLabel: completed ? "Finished" : title.status === "queued" ? "Queued" : title.status === "paused" ? "Paused" : "Reading",
+      statusTone: completed ? "completed" : title.status === "paused" ? "paused" : title.status === "queued" ? "queued" : "watching",
+      availabilityLabel: completed ? "Finished" : title.status === "queued" ? `Start ${nextUnit}` : `Continue ${nextUnit}`,
+      posterCopy: completed ? "Finished" : nextUnit,
+      lastCompletedLabel: title.lastCompletedUnit || "",
+      metaCopy: completed ? `Finished ${formatRelative(title.lastActivityAt)}` : `Updated ${formatRelative(title.lastActivityAt)}`,
+      quickActionLabel: "",
+      quickActionDisabled: true
     };
   }
 
@@ -2144,6 +2316,11 @@ function getTitleWatchState(title) {
     kindLabel: "Series",
     statusLabel: completed ? "Completed" : comingSoon ? "Coming soon" : title.status === "queued" ? "Queued" : "Watching",
     statusTone: completed ? "completed" : comingSoon ? "coming-soon" : title.status === "queued" ? "queued" : "watching",
+    availabilityLabel: completed
+      ? "All caught up"
+      : comingSoon
+        ? `Coming ${nextAirLabel}${title.serviceLabel || getConnectorDefinition(title.platformId)?.name ? ` on ${title.serviceLabel || getConnectorDefinition(title.platformId)?.name}` : ""}`
+        : `Up next ${nextUnit}${title.serviceLabel || getConnectorDefinition(title.platformId)?.name ? ` on ${title.serviceLabel || getConnectorDefinition(title.platformId)?.name}` : ""}`,
     posterCopy: completed ? "All caught up" : comingSoon ? `${nextUnit} soon` : nextUnit,
     lastCompletedLabel: title.lastCompletedUnit || "",
     metaCopy: completed
@@ -2164,7 +2341,7 @@ async function markNextUnitWatched(titleId) {
     return;
   }
   const watchState = getTitleWatchState(title);
-  const targetUnit = watchState.nextUnit || (title.kind === "movie" ? "Movie" : title.currentUnit);
+  const targetUnit = watchState.nextUnit || (title.kind === "movie" ? "Movie" : title.kind === "book" ? (title.currentUnit || "Chapter 1") : title.currentUnit);
   if (!targetUnit || watchState.quickActionDisabled) {
     return;
   }
@@ -2179,7 +2356,7 @@ async function markNextUnitWatched(titleId) {
   await persistAndRender({
     saveRemote: true,
     syncLinked: shouldAutoSync(),
-    toast: `${title.title} moved to the next episode.`
+    toast: `${title.title} updated.`
   });
 }
 
@@ -2194,7 +2371,7 @@ async function markTitleThroughUnit(title, targetUnit, {
     return;
   }
   const progressBefore = Number.isFinite(Number(title.progress)) ? Number(title.progress) : 0;
-  let trackedDurationMin = normalizeRuntimeMinutes(title.runtimeMin, title.kind === "movie" ? 120 : 42);
+  let trackedDurationMin = normalizeRuntimeMinutes(title.runtimeMin, title.kind === "movie" ? 120 : title.kind === "book" ? 35 : 42);
   let trackedUnitLabel = targetUnit;
 
   if (title.kind === "movie") {
@@ -2202,6 +2379,15 @@ async function markTitleThroughUnit(title, targetUnit, {
     title.progress = 100;
     title.lastCompletedUnit = "Movie";
     title.currentUnit = "Completed";
+    title.lastActivityAt = startedAt;
+  } else if (title.kind === "book") {
+    const normalizedTarget = String(targetUnit || "").trim() || title.currentUnit || "Chapter 1";
+    const markedFinished = /^(finished|complete|completed|done)$/i.test(normalizedTarget);
+    trackedUnitLabel = markedFinished ? "Finished" : normalizedTarget;
+    title.lastCompletedUnit = trackedUnitLabel;
+    title.currentUnit = markedFinished ? "Finished" : normalizedTarget;
+    title.status = markedFinished ? "completed" : "watching";
+    title.progress = markedFinished ? 100 : Math.min(95, Math.max(Number(title.progress) || 0, 12));
     title.lastActivityAt = startedAt;
   } else {
     if (title.sourceId) {
@@ -2362,7 +2548,7 @@ function findExistingTitle(result, platformId) {
   const targetTitle = normalizeLookupTitle(result.title);
   return state.titles.find((title) => (
     normalizeLookupTitle(title.title) === targetTitle
-    && title.kind === (result.kind === "movie" ? "movie" : "show")
+    && title.kind === (result.kind === "movie" ? "movie" : result.kind === "book" ? "book" : "show")
     && Number(title.year || 0) === Number(result.year || 0)
     && title.platformId === platformId
   )) || null;
@@ -2428,6 +2614,7 @@ function getFilteredTitles() {
         title.title,
         title.summary,
         title.currentUnit,
+        title.serviceLabel,
         ...(title.genres || []),
         connector?.name || ""
       ]
@@ -2446,6 +2633,7 @@ function getStats() {
   const totalMinutesTracked = state.sessions.reduce((total, session) => total + session.durationMin, 0);
   const totalEpisodesTracked = state.sessions.filter((session) => lookupTitle(session.titleId)?.kind === "show").length;
   const totalMoviesTracked = state.sessions.filter((session) => lookupTitle(session.titleId)?.kind === "movie").length;
+  const totalBooksTracked = state.sessions.filter((session) => lookupTitle(session.titleId)?.kind === "book").length;
   const streakDays = computeStreakDays(state.sessions);
   const stats = {
     totalTitles: state.titles.length,
@@ -2456,6 +2644,7 @@ function getStats() {
     totalMinutesTracked,
     totalEpisodesTracked,
     totalMoviesTracked,
+    totalBooksTracked,
     connectedConnectors,
     idleConnectors: state.connectors.length - connectedConnectors,
     streakDays
@@ -2471,6 +2660,9 @@ function getRewardBadges(stats) {
   }
   if (stats.totalEpisodesTracked >= 10) {
     badges.push({ id: "series-run", label: "Series Run", copy: "10 episodes completed." });
+  }
+  if (stats.totalBooksTracked >= 5) {
+    badges.push({ id: "bookworm", label: "Bookworm", copy: "5 reading updates logged." });
   }
   if (stats.totalMoviesTracked >= 5) {
     badges.push({ id: "movie-night", label: "Movie Night", copy: "5 movies logged." });
@@ -2490,20 +2682,20 @@ function getRewardBadges(stats) {
 function renderTrackingOverview(stats) {
   return `
     <section class="stats-grid tracking-grid">
-      <article class="panel metric-card">
+      <article class="panel metric-card compact-metric">
         <span class="eyebrow">Tracked time</span>
         <strong>${escapeHtml(formatHours(stats.totalMinutesTracked))}</strong>
-        <p>${stats.totalEpisodesTracked} episode updates and ${stats.totalMoviesTracked} movie updates logged.</p>
+        <p>${stats.totalEpisodesTracked} episodes, ${stats.totalMoviesTracked} movies, ${stats.totalBooksTracked} books</p>
       </article>
-      <article class="panel metric-card">
+      <article class="panel metric-card compact-metric">
         <span class="eyebrow">This week</span>
         <strong>${escapeHtml(formatHours(stats.weeklyMinutes))}</strong>
-        <p>${stats.weeklySessions} watch updates in the last 7 days.</p>
+        <p>${stats.weeklySessions} updates</p>
       </article>
-      <article class="panel metric-card">
+      <article class="panel metric-card compact-metric">
         <span class="eyebrow">Rewards</span>
         <strong>${stats.badges.length}</strong>
-        <p>${stats.badges.length ? "Badges earned from consistent tracking." : "Keep logging to unlock your first badge."}</p>
+        <p>${stats.badges.length ? "Unlocked" : "Keep logging"}</p>
         <div class="reward-rack">
           ${stats.badges.length
             ? stats.badges.map((badge) => `<span class="reward-badge" title="${escapeAttribute(badge.copy)}">${escapeHtml(badge.label)}</span>`).join("") 
@@ -2583,7 +2775,7 @@ function createEmptySessionDraft() {
   return {
     titleId: "",
     watchedAtLocal: toDateTimeLocalValue(new Date().toISOString()),
-    currentUnit: "S1 E1",
+    currentUnit: "",
     device: "This device",
     summary: ""
   };
@@ -2594,7 +2786,7 @@ function loadEditorFromMetadata(resultId) {
   if (!result) {
     return;
   }
-  const starter = createTitleFromMetadata(result, inferPlatformId(result.platformHint) || "netflix");
+  const starter = createTitleFromMetadata(result, inferPlatformId(result.platformHint) || (result.kind === "book" ? "books" : "netflix"));
   ui.editor = {
     mode: "create",
     titleId: null,
@@ -2604,7 +2796,7 @@ function loadEditorFromMetadata(resultId) {
     year: starter.year,
     runtimeMin: starter.runtimeMin || "",
     platformId: starter.platformId,
-    serviceLabel: starter.serviceLabel || result.platformHint || "",
+    serviceLabel: starter.serviceLabel || result.creatorLabel || result.platformHint || "",
     status: starter.status,
     progress: starter.progress,
     currentUnit: starter.currentUnit,
@@ -2663,13 +2855,21 @@ function buildTitlePayloadFromEditor() {
   if (!title) {
     throw new Error("Title name is required.");
   }
-  const kind = ui.editor.kind === "movie" ? "movie" : "show";
+  const kind = ui.editor.kind === "movie" ? "movie" : ui.editor.kind === "book" ? "book" : "show";
   const status = ui.editor.status || "queued";
   const sourceId = ui.editor.sourceId || lookupTitle(ui.editor.titleId)?.sourceId || "";
-  const nextUnit = ui.editor.currentUnit || (kind === "movie" ? "Movie" : "S1 E1");
+  const nextUnit = ui.editor.currentUnit || (kind === "movie" ? "Movie" : kind === "book" ? "Chapter 1" : "S1 E1");
   const episodeOptions = kind === "show" && sourceId ? (episodeOptionsCache.get(sourceId) || []) : [];
   const currentIndex = kind === "show" ? findEpisodeIndex(episodeOptions, nextUnit) : -1;
   const inferredLastCompletedUnit = currentIndex > 0 ? episodeOptions[currentIndex - 1]?.value || "" : "";
+  const existingTitle = lookupTitle(ui.editor.titleId);
+  const progress = status === "completed"
+    ? 100
+    : kind === "show"
+      ? computeEpisodeProgressFromIndex(Math.max(0, currentIndex - 1), episodeOptions.length)
+      : status === "watching"
+        ? Math.max(Number(existingTitle?.progress) || 0, 12)
+        : 0;
   return {
     id: ui.editor.titleId || createId("title"),
     sourceId,
@@ -2677,29 +2877,35 @@ function buildTitlePayloadFromEditor() {
     kind,
     year: Number.isFinite(Number(ui.editor.year)) ? Number(ui.editor.year) : new Date().getFullYear(),
     runtimeMin: normalizeRuntimeMinutes(ui.editor.runtimeMin, 0),
-    platformId: ui.editor.platformId || "netflix",
-    serviceLabel: ui.editor.serviceLabel || getConnectorDefinition(ui.editor.platformId)?.name || "",
+    platformId: ui.editor.platformId || (kind === "book" ? "books" : "netflix"),
+    serviceLabel: ui.editor.serviceLabel || getConnectorDefinition(ui.editor.platformId || (kind === "book" ? "books" : "netflix"))?.name || "",
     status,
-    progress: status === "completed" ? 100 : kind === "movie" ? 0 : computeEpisodeProgressFromIndex(Math.max(0, currentIndex - 1), episodeOptions.length),
+    progress,
     genres: ui.editor.genres
       .split(",")
       .map((genre) => genre.trim())
       .filter(Boolean)
       .slice(0, 3),
-    currentUnit: status === "completed" && kind === "movie" ? "Completed" : nextUnit,
+    currentUnit: status === "completed" ? (kind === "movie" ? "Completed" : kind === "book" ? "Finished" : nextUnit) : nextUnit,
     summary: ui.editor.summary || "Tracked in Watchnest.",
     lastActivityAt: new Date().toISOString(),
-    favorite: lookupTitle(ui.editor.titleId)?.favorite || false,
+    favorite: existingTitle?.favorite || false,
     image: ui.editor.image || "",
     externalUrl: ui.editor.externalUrl || "",
     source: ui.editor.source || "manual",
-    ratings: Array.isArray(ui.editor.ratings) ? ui.editor.ratings : lookupTitle(ui.editor.titleId)?.ratings || [],
-    ratingUpdatedAt: ui.editor.ratingUpdatedAt || lookupTitle(ui.editor.titleId)?.ratingUpdatedAt || null,
-    imdbId: ui.editor.imdbId || lookupTitle(ui.editor.titleId)?.imdbId || "",
+    ratings: kind === "book" ? [] : Array.isArray(ui.editor.ratings) ? ui.editor.ratings : existingTitle?.ratings || [],
+    ratingUpdatedAt: kind === "book" ? null : ui.editor.ratingUpdatedAt || existingTitle?.ratingUpdatedAt || null,
+    imdbId: kind === "book" ? "" : ui.editor.imdbId || existingTitle?.imdbId || "",
     userRating: normalizeUserRating(ui.editor.userRating),
-    lastCompletedUnit: status === "completed" && kind === "show"
-      ? episodeOptions[episodeOptions.length - 1]?.value || nextUnit
-      : inferredLastCompletedUnit
+    lastCompletedUnit: status === "completed"
+      ? kind === "show"
+        ? episodeOptions[episodeOptions.length - 1]?.value || nextUnit
+        : kind === "book"
+          ? "Finished"
+          : "Movie"
+      : kind === "book"
+        ? nextUnit
+        : inferredLastCompletedUnit
   };
 }
 
@@ -2755,6 +2961,7 @@ function inferPlatformId(platformHint) {
     return null;
   }
   const lowered = platformHint.toLowerCase();
+  if (lowered.includes("book")) return "books";
   if (lowered.includes("netflix")) return "netflix";
   if (lowered.includes("amazon") || lowered.includes("prime")) return "prime-video";
   if (lowered.includes("disney")) return "disney-plus";
@@ -2777,6 +2984,17 @@ function renderPlatformOptions(selectedPlatform, includeAll = true) {
     );
   }
   return options.join("");
+}
+
+function labelFromKind(kind) {
+  switch (kind) {
+    case "movie":
+      return "Movie";
+    case "book":
+      return "Book";
+    default:
+      return "Show";
+  }
 }
 
 function labelFromStatus(status) {

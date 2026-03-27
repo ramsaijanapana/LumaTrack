@@ -38,6 +38,7 @@ ALLOWED_REMOTE_IMAGE_HOSTS = {
     "www.tvmaze.com",
     "upload.wikimedia.org",
     "commons.wikimedia.org",
+    "covers.openlibrary.org",
     "m.media-amazon.com",
     "ia.media-imdb.com",
 }
@@ -199,6 +200,15 @@ CONNECTOR_DEFINITIONS = [
         "defaultMode": "Webhook or auto-capture",
         "summary": "Plex and Tautulli can post playback directly, with browser/manual fallback available.",
         "capabilities": ["Plex webhook", "Tautulli", "Manual fallback"],
+    },
+    {
+        "id": "books",
+        "name": "Books",
+        "shortName": "Books",
+        "accent": "#7c5a2b",
+        "defaultMode": "Manual tracking",
+        "summary": "Book progress and reading updates, with metadata search and manual tracking.",
+        "capabilities": ["Manual progress", "Search add", "Library sync"],
     },
 ]
 
@@ -1710,6 +1720,93 @@ def fetch_movie_results(query):
     return results
 
 
+def fetch_book_results(query):
+    cache_key = ("openlibrary", normalize_search_text(query))
+    cached = cache_lookup(SEARCH_CACHE, cache_key, 30 * 60)
+    if cached is not None:
+        return cached
+
+    response = requests.get(
+        "https://openlibrary.org/search.json",
+        params={
+            "q": query,
+            "limit": 12,
+            "fields": ",".join(
+                [
+                    "key",
+                    "title",
+                    "author_name",
+                    "first_publish_year",
+                    "cover_i",
+                    "subject",
+                    "publisher",
+                    "ratings_average",
+                    "ratings_count",
+                    "edition_count",
+                ]
+            ),
+        },
+        headers=HTTP_HEADERS,
+        timeout=12,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    docs = payload.get("docs") or []
+
+    results = []
+    for item in docs[:8]:
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        authors = [str(name).strip() for name in (item.get("author_name") or []) if str(name).strip()]
+        creator_label = ", ".join(authors[:2])
+        subjects = [str(subject).strip() for subject in (item.get("subject") or []) if str(subject).strip()]
+        publishers = [str(publisher).strip() for publisher in (item.get("publisher") or []) if str(publisher).strip()]
+        cover_id = parse_int(item.get("cover_i"), 0)
+        average_rating = item.get("ratings_average")
+        ratings = []
+        if average_rating not in {None, ""}:
+            try:
+                ratings.append({"source": "Open Library", "value": f"{round(float(average_rating), 1)}/5"})
+            except (TypeError, ValueError):
+                pass
+        summary_parts = []
+        if creator_label:
+            summary_parts.append(f"by {creator_label}")
+        if publishers:
+            summary_parts.append(f"Published by {publishers[0]}")
+        edition_count = parse_int(item.get("edition_count"), 0)
+        if edition_count:
+            summary_parts.append(f"{edition_count} editions indexed")
+
+        results.append(
+            {
+                "id": f"openlibrary:{key.strip('/').split('/')[-1]}",
+                "kind": "book",
+                "title": title,
+                "year": parse_year(item.get("first_publish_year")),
+                "runtimeMin": 35,
+                "summary": ". ".join(summary_parts) + ("." if summary_parts else "Book metadata from Open Library."),
+                "genres": subjects[:2],
+                "image": proxied_image_url(f"https://covers.openlibrary.org/b/id/{cover_id}-L.jpg") if cover_id else None,
+                "externalUrl": f"https://openlibrary.org{key}",
+                "platformHint": "Books",
+                "creatorLabel": creator_label,
+                "currentUnit": "Chapter 1",
+                "source": "openlibrary",
+                "sourceId": f"openlibrary:{key.strip('/').split('/')[-1]}",
+                "ratings": ratings,
+                "_sourceScore": max(parse_int(item.get("ratings_count"), 0) / 100, 0),
+            }
+        )
+
+    cache_store(SEARCH_CACHE, cache_key, results, max_items=128)
+    return results
+
+
 def fetch_tvmaze_episode_options(source_id):
     if not source_id or not str(source_id).startswith("tvmaze:"):
         return {"episodes": [], "show": {}}
@@ -2074,6 +2171,8 @@ def api_metadata_search():
             results.extend(fetch_tvmaze_results(query))
         if kind in {"all", "movie"}:
             results.extend(fetch_movie_results(query))
+        if kind in {"all", "book"}:
+            results.extend(fetch_book_results(query))
     except requests.RequestException as error:
         return jsonify({"error": f"Metadata search failed: {error}"}), 502
 

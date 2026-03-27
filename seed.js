@@ -52,6 +52,15 @@ export const CONNECTOR_DEFINITIONS = [
     defaultMode: "Webhook or auto-capture",
     summary: "Plex and Tautulli can post playback directly, with browser/manual fallback available.",
     capabilities: ["Plex webhook", "Tautulli", "Manual fallback"]
+  },
+  {
+    id: "books",
+    name: "Books",
+    shortName: "Books",
+    accent: "#7c5a2b",
+    defaultMode: "Manual tracking",
+    summary: "Book progress and reading updates, with metadata search and manual tracking.",
+    capabilities: ["Manual progress", "Search add", "Library sync"]
   }
 ];
 
@@ -155,15 +164,15 @@ export function createTitleFromMetadata(result, platformId = "netflix") {
     id: createId("title"),
     sourceId: inferSourceId(result),
     title: result.title || "Untitled",
-    kind: result.kind === "movie" ? "movie" : "show",
+    kind: result.kind === "movie" ? "movie" : result.kind === "book" ? "book" : "show",
     year: Number.isFinite(result.year) ? result.year : new Date().getFullYear(),
     runtimeMin: clampNumber(result.runtimeMin, 0, 600),
     platformId,
-    serviceLabel: String(result.platformHint || "").trim(),
+    serviceLabel: String(result.creatorLabel || result.platformHint || "").trim(),
     status: "queued",
     progress: 0,
     genres: Array.isArray(result.genres) ? result.genres.slice(0, 3) : [],
-    currentUnit: result.currentUnit || (result.kind === "movie" ? "Movie" : "S1 E1"),
+    currentUnit: result.currentUnit || (result.kind === "movie" ? "Movie" : result.kind === "book" ? "Chapter 1" : "S1 E1"),
     summary: result.summary || "Tracked in Watchnest.",
     lastActivityAt: now,
     favorite: false,
@@ -183,15 +192,15 @@ function normalizeTitles(titles) {
     id: title.id || createId("title"),
     sourceId: inferSourceId(title),
     title: title.title || "Untitled",
-    kind: title.kind === "movie" ? "movie" : "show",
+    kind: title.kind === "movie" ? "movie" : title.kind === "book" ? "book" : "show",
     year: Number.isFinite(title.year) ? title.year : new Date().getFullYear(),
     runtimeMin: clampNumber(title.runtimeMin, 0, 600),
-    platformId: title.platformId || "netflix",
+    platformId: title.platformId || (title.kind === "book" ? "books" : "netflix"),
     serviceLabel: String(title.serviceLabel || "").trim(),
     status: ["watching", "queued", "paused", "completed"].includes(title.status) ? title.status : "queued",
     progress: clampNumber(title.progress, 0, 100),
     genres: Array.isArray(title.genres) ? title.genres.slice(0, 3) : [],
-    currentUnit: title.currentUnit || (title.kind === "movie" ? "Movie" : "S1 E1"),
+    currentUnit: title.currentUnit || (title.kind === "movie" ? "Movie" : title.kind === "book" ? "Chapter 1" : "S1 E1"),
     summary: title.summary || "Tracked in Watchnest.",
     lastActivityAt: isValidDate(title.lastActivityAt) ? title.lastActivityAt : new Date().toISOString(),
     favorite: Boolean(title.favorite),
@@ -265,7 +274,7 @@ function inferSourceId(value) {
   }
 
   const fallbackId = String(value?.id || "").trim();
-  if (fallbackId.startsWith("tvmaze:") || fallbackId.startsWith("wikidata:")) {
+  if (fallbackId.startsWith("tvmaze:") || fallbackId.startsWith("wikidata:") || fallbackId.startsWith("openlibrary:")) {
     return fallbackId;
   }
 
@@ -273,6 +282,11 @@ function inferSourceId(value) {
   const tvmazeMatch = /tvmaze\.com\/shows\/(\d+)/i.exec(externalUrl);
   if (tvmazeMatch) {
     return `tvmaze:${tvmazeMatch[1]}`;
+  }
+
+  const openLibraryMatch = /openlibrary\.org\/(?:works|books)\/([^/?#]+)/i.exec(externalUrl);
+  if (openLibraryMatch) {
+    return `openlibrary:${openLibraryMatch[1]}`;
   }
 
   return "";
